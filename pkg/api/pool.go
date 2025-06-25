@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -99,12 +100,9 @@ func (p *apiPool) HealthStatus() map[string]HealthStatus {
 		metrics := wrapper.client.GetMetrics()
 		
 		status[string(rune('A'+i))] = HealthStatus{
-			Healthy:        wrapper.healthy.Load(),
-			LastCheck:      wrapper.lastUsed,
-			TotalRequests:  metrics.TotalRequests,
-			FailedRequests: metrics.FailedRequests,
-			SuccessRate:    metrics.SuccessRate,
-			CircuitState:   metrics.CircuitState,
+			Healthy:   wrapper.healthy.Load(),
+			LastCheck: wrapper.lastUsed.Format("2006-01-02 15:04:05"),
+			Message:   fmt.Sprintf("Requests: %d, Errors: %d, Success Rate: %.2f%%", metrics.RequestCount, metrics.ErrorCount, metrics.SuccessRate*100),
 		}
 	}
 	

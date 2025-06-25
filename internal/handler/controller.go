@@ -20,7 +20,7 @@ type ControllerConfig struct {
 	EnableNotify bool
 }
 
-type Controller interface {
+type ControllerInterface interface {
 	Start(ctx context.Context) error
 	Stop() error
 	ProcessSites(ctx context.Context, domains []string) error

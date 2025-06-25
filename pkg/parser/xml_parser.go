@@ -9,7 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
+
+	"sitemap-go/pkg/logger"
 )
 
 type xmlURL struct {
@@ -24,14 +27,21 @@ type xmlSitemap struct {
 	URLs    []xmlURL `xml:"url"`
 }
 
+type xmlSitemapRef struct {
+	Loc     string `xml:"loc"`
+	LastMod string `xml:"lastmod"`
+}
+
 type xmlSitemapIndex struct {
-	XMLName  xml.Name      `xml:"sitemapindex"`
-	Sitemaps []xmlSitemap  `xml:"sitemap"`
+	XMLName  xml.Name       `xml:"sitemapindex"`
+	Sitemaps []xmlSitemapRef `xml:"sitemap"`
 }
 
 type XMLParser struct {
-	httpClient *http.Client
-	filters    []Filter
+	httpClient      *http.Client
+	filters         []Filter
+	log             *logger.Logger
+	concurrentLimit int
 }
 
 func NewXMLParser() *XMLParser {
@@ -39,14 +49,26 @@ func NewXMLParser() *XMLParser {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		filters: make([]Filter, 0),
+		filters:         make([]Filter, 0),
+		log:             logger.GetLogger().WithField("component", "xml_parser"),
+		concurrentLimit: 5, // Default concurrent sitemap processing limit
+	}
+}
+
+// SetConcurrentLimit sets the maximum number of concurrent sitemap fetches
+func (p *XMLParser) SetConcurrentLimit(limit int) {
+	if limit > 0 {
+		p.concurrentLimit = limit
 	}
 }
 
 func (p *XMLParser) Parse(ctx context.Context, sitemapURL string) ([]URL, error) {
+	p.log.WithField("url", sitemapURL).Debug("Starting sitemap parse")
+	
 	// Download sitemap content
 	content, err := p.downloadSitemap(ctx, sitemapURL)
 	if err != nil {
+		p.log.WithError(err).WithField("url", sitemapURL).Error("Failed to download sitemap")
 		return nil, fmt.Errorf("failed to download sitemap: %w", err)
 	}
 	defer content.Close()
@@ -58,17 +80,10 @@ func (p *XMLParser) Parse(ctx context.Context, sitemapURL string) ([]URL, error)
 	// Try parsing as sitemap index first
 	var sitemapIndex xmlSitemapIndex
 	if err := decoder.Decode(&sitemapIndex); err == nil && len(sitemapIndex.Sitemaps) > 0 {
-		// It's a sitemap index, recursively parse each sitemap
-		for _, sitemap := range sitemapIndex.Sitemaps {
-			if sitemap.Loc != "" {
-				subURLs, err := p.Parse(ctx, sitemap.Loc)
-				if err != nil {
-					// Log error but continue with other sitemaps
-					continue
-				}
-				urls = append(urls, subURLs...)
-			}
-		}
+		p.log.WithField("count", len(sitemapIndex.Sitemaps)).Info("Processing sitemap index")
+		
+		// Process sitemaps concurrently
+		urls = p.processSitemapsIndexConcurrently(ctx, sitemapIndex.Sitemaps)
 		return urls, nil
 	}
 
@@ -92,14 +107,16 @@ func (p *XMLParser) Parse(ctx context.Context, sitemapURL string) ([]URL, error)
 			continue
 		}
 
-		// Parse URL to apply filters
+			// Parse URL to apply filters
 		parsedURL, err := url.Parse(xmlURL.Loc)
 		if err != nil {
+			p.log.WithError(err).WithField("url", xmlURL.Loc).Debug("Failed to parse URL")
 			continue
 		}
 
-		// Apply filters
+			// Apply filters
 		if p.shouldExclude(parsedURL) {
+			p.log.WithField("url", xmlURL.Loc).Debug("URL excluded by filter")
 			continue
 		}
 
@@ -116,6 +133,7 @@ func (p *XMLParser) Parse(ctx context.Context, sitemapURL string) ([]URL, error)
 		urls = append(urls, url)
 	}
 
+	p.log.WithField("count", len(urls)).Info("Successfully parsed sitemap")
 	return urls, nil
 }
 
@@ -172,6 +190,61 @@ func (p *XMLParser) downloadSitemap(ctx context.Context, sitemapURL string) (io.
 	}
 
 	return resp.Body, nil
+}
+
+// processSitemapsIndexConcurrently processes multiple sitemaps concurrently
+func (p *XMLParser) processSitemapsIndexConcurrently(ctx context.Context, sitemaps []xmlSitemapRef) []URL {
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		allURLs []URL
+		sem    = make(chan struct{}, p.concurrentLimit)
+	)
+
+	for _, sitemap := range sitemaps {
+		if sitemap.Loc == "" {
+			continue
+		}
+
+		wg.Add(1)
+		go func(sitemapLoc string) {
+			defer wg.Done()
+			
+			// Acquire semaphore
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				p.log.Warn("Context cancelled, stopping sitemap processing")
+				return
+			default:
+			}
+
+			p.log.WithField("url", sitemapLoc).Debug("Processing sub-sitemap")
+			
+			subURLs, err := p.Parse(ctx, sitemapLoc)
+			if err != nil {
+				p.log.WithError(err).WithField("url", sitemapLoc).Warn("Failed to parse sub-sitemap")
+				return
+			}
+
+			// Safely append URLs
+			mu.Lock()
+			allURLs = append(allURLs, subURLs...)
+			mu.Unlock()
+			
+			p.log.WithFields(map[string]interface{}{
+				"url":   sitemapLoc,
+				"count": len(subURLs),
+			}).Debug("Sub-sitemap processed successfully")
+		}(sitemap.Loc)
+	}
+
+	wg.Wait()
+	p.log.WithField("total_urls", len(allURLs)).Info("Completed processing sitemap index")
+	return allURLs
 }
 
 func (p *XMLParser) shouldExclude(u *url.URL) bool {

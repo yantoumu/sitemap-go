@@ -4,6 +4,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"sitemap-go/pkg/logger"
 )
 
 var (
@@ -25,6 +27,7 @@ type URLKeywordExtractor struct {
 	filters        []Filter
 	minWordLength  int
 	maxWordLength  int
+	log            *logger.Logger
 }
 
 func NewURLKeywordExtractor() *URLKeywordExtractor {
@@ -32,12 +35,16 @@ func NewURLKeywordExtractor() *URLKeywordExtractor {
 		filters:       make([]Filter, 0),
 		minWordLength: 3,
 		maxWordLength: 50,
+		log:           logger.GetLogger().WithField("component", "keyword_extractor"),
 	}
 }
 
 func (e *URLKeywordExtractor) Extract(urlStr string) ([]string, error) {
+	e.log.WithField("url", urlStr).Debug("Extracting keywords from URL")
+	
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
+		e.log.WithError(err).WithField("url", urlStr).Error("Failed to parse URL")
 		return nil, err
 	}
 
@@ -66,6 +73,11 @@ func (e *URLKeywordExtractor) Extract(urlStr string) ([]string, error) {
 	for _, filter := range e.filters {
 		keywords = filter.Apply(keywords)
 	}
+	
+	e.log.WithFields(map[string]interface{}{
+		"url":           urlStr,
+		"keywords_count": len(keywords),
+	}).Debug("Keywords extracted successfully")
 	
 	return keywords, nil
 }

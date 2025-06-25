@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sync/atomic"
 	"time"
+
+	"sitemap-go/pkg/logger"
 )
 
 type httpAPIClient struct {
@@ -16,6 +18,7 @@ type httpAPIClient struct {
 	apiKey        string
 	httpClient    *http.Client
 	breaker       *CircuitBreaker
+	log           *logger.Logger
 	
 	// Metrics
 	totalRequests uint64
@@ -32,6 +35,7 @@ func NewHTTPAPIClient(baseURL, apiKey string) APIClient {
 			Timeout: 10 * time.Second,
 		},
 		breaker: NewCircuitBreaker(5, 30*time.Second),
+		log:     logger.GetLogger().WithField("component", "api_client"),
 	}
 }
 
@@ -42,6 +46,8 @@ func (c *httpAPIClient) Query(ctx context.Context, keywords []string) (*APIRespo
 		atomic.AddUint64(&c.totalLatency, uint64(time.Since(start).Milliseconds()))
 	}()
 	
+	c.log.WithField("keywords_count", len(keywords)).Debug("Starting API query")
+	
 	var result *APIResponse
 	err := c.breaker.Execute(ctx, func() error {
 		return c.doQuery(ctx, keywords, &result)
@@ -50,9 +56,11 @@ func (c *httpAPIClient) Query(ctx context.Context, keywords []string) (*APIRespo
 	if err != nil {
 		atomic.AddUint64(&c.failedRequests, 1)
 		c.lastError.Store(err.Error())
+		c.log.WithError(err).WithField("keywords_count", len(keywords)).Error("API query failed")
 		return nil, err
 	}
 	
+	c.log.WithField("duration_ms", time.Since(start).Milliseconds()).Debug("API query completed successfully")
 	return result, nil
 }
 
@@ -136,18 +144,12 @@ func (c *httpAPIClient) GetMetrics() *APIMetrics {
 		successRate = float64(total-failed) / float64(total)
 	}
 	
-	var lastErr string
-	if v := c.lastError.Load(); v != nil {
-		lastErr = v.(string)
-	}
 	
 	return &APIMetrics{
-		TotalRequests:   total,
-		FailedRequests:  failed,
-		SuccessRate:     successRate,
-		AverageLatency:  avgLatency,
-		CircuitState:    c.breaker.State().String(),
-		LastError:       lastErr,
+		RequestCount:  int64(total),
+		ErrorCount:    int64(failed),
+		SuccessRate:   successRate,
+		AvgLatency:    avgLatency,
 	}
 }
 
