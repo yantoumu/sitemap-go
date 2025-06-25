@@ -24,6 +24,10 @@ func GetParserFactory() ParserFactory {
 		// Register default parsers
 		factory.RegisterParser("xml", NewXMLParser())
 		factory.RegisterParser("xml.gz", NewXMLParser())
+		factory.RegisterParser("rss", NewRSSParser())
+		factory.RegisterParser("feed", NewRSSParser())
+		factory.RegisterParser("txt", NewTXTParser())
+		factory.RegisterParser("text", NewTXTParser())
 	})
 	return factory
 }
