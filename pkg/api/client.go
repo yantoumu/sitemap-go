@@ -14,11 +14,13 @@ import (
 )
 
 type httpAPIClient struct {
-	baseURL       string
-	apiKey        string
-	httpClient    *http.Client
-	breaker       *CircuitBreaker
-	log           *logger.Logger
+	baseURL         string
+	apiKey          string
+	connManager     *ConnectionManager
+	breaker         *CircuitBreaker
+	adaptiveBreaker *AdaptiveCircuitBreaker
+	log             *logger.Logger
+	useAdaptive     bool
 	
 	// Metrics
 	totalRequests uint64
@@ -28,15 +30,34 @@ type httpAPIClient struct {
 }
 
 func NewHTTPAPIClient(baseURL, apiKey string) APIClient {
+	return NewHTTPAPIClientWithConfig(baseURL, apiKey, HighThroughputConnectionConfig())
+}
+
+// NewHTTPAPIClientWithConfig creates a new HTTP API client with custom connection config
+func NewHTTPAPIClientWithConfig(baseURL, apiKey string, connConfig ConnectionConfig) APIClient {
 	return &httpAPIClient{
-		baseURL: baseURL,
-		apiKey:  apiKey,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-		breaker: NewCircuitBreaker(5, 30*time.Second),
-		log:     logger.GetLogger().WithField("component", "api_client"),
+		baseURL:         baseURL,
+		apiKey:          apiKey,
+		connManager:     NewConnectionManager(connConfig),
+		breaker:         NewCircuitBreaker(5, 30*time.Second),
+		adaptiveBreaker: NewAdaptiveCircuitBreaker(3, 10, 30*time.Second),
+		log:             logger.GetLogger().WithField("component", "api_client"),
+		useAdaptive:     true, // Use adaptive breaker by default
 	}
+}
+
+// NewHTTPAPIClientWithAdaptiveBreaker creates client with adaptive circuit breaker
+func NewHTTPAPIClientWithAdaptiveBreaker(baseURL, apiKey string, connConfig ConnectionConfig, useAdaptive bool) APIClient {
+	client := &httpAPIClient{
+		baseURL:         baseURL,
+		apiKey:          apiKey,
+		connManager:     NewConnectionManager(connConfig),
+		breaker:         NewCircuitBreaker(5, 30*time.Second),
+		adaptiveBreaker: NewAdaptiveCircuitBreaker(3, 10, 30*time.Second),
+		log:             logger.GetLogger().WithField("component", "api_client"),
+		useAdaptive:     useAdaptive,
+	}
+	return client
 }
 
 func (c *httpAPIClient) Query(ctx context.Context, keywords []string) (*APIResponse, error) {
@@ -49,9 +70,18 @@ func (c *httpAPIClient) Query(ctx context.Context, keywords []string) (*APIRespo
 	c.log.WithField("keywords_count", len(keywords)).Debug("Starting API query")
 	
 	var result *APIResponse
-	err := c.breaker.Execute(ctx, func() error {
-		return c.doQuery(ctx, keywords, &result)
-	})
+	var err error
+	
+	// Use adaptive breaker if enabled, otherwise use standard breaker
+	if c.useAdaptive {
+		err = c.adaptiveBreaker.Execute(ctx, func() error {
+			return c.doQuery(ctx, keywords, &result)
+		})
+	} else {
+		err = c.breaker.Execute(ctx, func() error {
+			return c.doQuery(ctx, keywords, &result)
+		})
+	}
 	
 	if err != nil {
 		atomic.AddUint64(&c.failedRequests, 1)
@@ -85,8 +115,8 @@ func (c *httpAPIClient) doQuery(ctx context.Context, keywords []string, result *
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	
-	// Execute request
-	resp, err := c.httpClient.Do(req)
+	// Execute request using connection manager
+	resp, err := c.connManager.GetClient().Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -116,7 +146,7 @@ func (c *httpAPIClient) HealthCheck(ctx context.Context) error {
 	
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.connManager.GetClient().Do(req)
 	if err != nil {
 		return err
 	}

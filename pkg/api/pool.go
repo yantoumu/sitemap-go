@@ -15,10 +15,12 @@ var (
 )
 
 type clientWrapper struct {
-	client    APIClient
-	inUse     atomic.Bool
-	lastUsed  time.Time
-	healthy   atomic.Bool
+	client        APIClient
+	inUse         atomic.Bool
+	lastUsed      time.Time
+	healthy       atomic.Bool
+	consecutiveFails int
+	maxFails      int
 }
 
 type apiPool struct {
@@ -42,8 +44,10 @@ func NewAPIPool(clients []APIClient) APIPool {
 	// Wrap clients
 	for _, client := range clients {
 		wrapper := &clientWrapper{
-			client:   client,
-			lastUsed: time.Now(),
+			client:          client,
+			lastUsed:        time.Now(),
+			consecutiveFails: 0,
+			maxFails:        3, // Allow 3 consecutive failures before marking unhealthy
 		}
 		wrapper.healthy.Store(true)
 		pool.clients = append(pool.clients, wrapper)
@@ -126,7 +130,15 @@ func (p *apiPool) healthCheckRoutine() {
 				err := wrapper.client.HealthCheck(ctx)
 				cancel()
 				
-				wrapper.healthy.Store(err == nil)
+				if err == nil {
+					wrapper.consecutiveFails = 0
+					wrapper.healthy.Store(true)
+				} else {
+					wrapper.consecutiveFails++
+					if wrapper.consecutiveFails >= wrapper.maxFails {
+						wrapper.healthy.Store(false)
+					}
+				}
 			}
 		}
 	}
