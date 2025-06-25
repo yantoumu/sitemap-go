@@ -1,0 +1,32 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+storage:
+  data_dir: "/app/data"
+  cache_size: 10000
+  encrypt_data: true
+
+worker:
+  max_workers: 50
+  queue_size: 1000
+  batch_size: 100
+  timeout_ms: 60000
+
+security:
+  encryption_key: "${ENCRYPTION_KEY}"
+  log_sensitive: false
+
+apis:
+  - name: "primary"
+    endpoint: "${API_ENDPOINT}"
+    api_key: "${API_KEY}"
+    qps: 100
+    timeout: 10000
+
+sites:
+  - domain: "${TARGET_DOMAIN}"
+    sitemaps:
+      - "${SITEMAP_URL}"
+    enabled: true
+    frequency: 21600

@@ -1,0 +1,32 @@
+server:
+  host: "localhost"
+  port: 8080
+
+storage:
+  data_dir: "./data"
+  cache_size: 1000
+  encrypt_data: false
+
+worker:
+  max_workers: 10
+  queue_size: 100
+  batch_size: 50
+  timeout_ms: 30000
+
+security:
+  encryption_key: "dev-key-32-chars-long-for-aes256"
+  log_sensitive: false
+
+apis:
+  - name: "primary"
+    endpoint: "https://api.example.com"
+    api_key: "dev-api-key"
+    qps: 10
+    timeout: 5000
+
+sites:
+  - domain: "example.com"
+    sitemaps:
+      - "https://example.com/sitemap.xml"
+    enabled: true
+    frequency: 3600
