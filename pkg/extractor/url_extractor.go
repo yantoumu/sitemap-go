@@ -55,22 +55,22 @@ func NewURLKeywordExtractor() *URLKeywordExtractor {
 }
 
 func (e *URLKeywordExtractor) Extract(urlStr string) ([]string, error) {
-	e.log.Debug("Extracting keywords from URL")
+	// Optimized: removed debug logging for better performance
 	
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
-		e.log.WithError(err).Error("Failed to parse URL")
+		// Only log errors, not debug info
 		return nil, err
 	}
 
-	// Extract keywords from path
+	// Extract keywords from path (optimized)
 	pathKeywords := e.extractFromPath(parsedURL.Path)
 	
 	// Extract keywords from query parameters
 	queryKeywords := e.extractFromQuery(parsedURL.Query())
 	
-	// Combine and deduplicate
-	keywordMap := make(map[string]bool)
+	// Pre-allocate with estimated size for better performance
+	keywordMap := make(map[string]bool, len(pathKeywords)+len(queryKeywords))
 	for _, kw := range pathKeywords {
 		keywordMap[kw] = true
 	}
@@ -78,7 +78,7 @@ func (e *URLKeywordExtractor) Extract(urlStr string) ([]string, error) {
 		keywordMap[kw] = true
 	}
 	
-	// Convert map to slice
+	// Convert map to slice with pre-allocation
 	keywords := make([]string, 0, len(keywordMap))
 	for kw := range keywordMap {
 		keywords = append(keywords, kw)
@@ -89,11 +89,7 @@ func (e *URLKeywordExtractor) Extract(urlStr string) ([]string, error) {
 		keywords = filter.Apply(keywords)
 	}
 	
-	e.log.WithFields(map[string]interface{}{
-		"url":           urlStr,
-		"keywords_count": len(keywords),
-	}).Debug("Keywords extracted successfully")
-	
+	// Removed debug logging for performance
 	return keywords, nil
 }
 

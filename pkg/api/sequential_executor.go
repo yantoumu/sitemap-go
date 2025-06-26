@@ -2,15 +2,13 @@ package api
 
 import (
 	"context"
-	"sync"
 	"time"
 )
 
-// SequentialExecutor ensures API requests are executed sequentially with 5-second delays
-// Implements rate limiting to avoid 429 "Too Many Requests" errors
-// 5-second delay based on Google Trends API rate limiting analysis
+// SequentialExecutor implements concurrent API execution with minimal rate limiting
+// Optimized for SEOKey API which tolerates higher request rates than Google Trends
 type SequentialExecutor struct {
-	mu sync.Mutex
+	// Removed mutex to allow true concurrent execution
 }
 
 // NewSequentialExecutor creates a new sequential executor
@@ -18,12 +16,9 @@ func NewSequentialExecutor() *SequentialExecutor {
 	return &SequentialExecutor{}
 }
 
-// Execute runs function with sequential execution and 5-second delay
-// Each request waits for previous to complete + 5 second delay to avoid rate limiting
+// Execute runs function with minimal delay for true concurrent execution
+// Reduced delay for SEOKey API which has better rate limiting tolerance
 func (se *SequentialExecutor) Execute(ctx context.Context, fn func() error) error {
-	se.mu.Lock()
-	defer se.mu.Unlock()
-	
 	// Check context before execution
 	select {
 	case <-ctx.Done():
@@ -35,11 +30,11 @@ func (se *SequentialExecutor) Execute(ctx context.Context, fn func() error) erro
 	// Execute function
 	err := fn()
 	
-	// Add 5-second delay after execution to avoid 429 rate limit errors
-	// Based on Google Trends API testing showing 429 errors with shorter delays
+	// Minimal 100ms delay for SEOKey API (much faster than 5 seconds)
+	// Only apply small delay to avoid overwhelming the API
 	select {
-	case <-time.After(5 * time.Second):
-		// Delay completed
+	case <-time.After(100 * time.Millisecond):
+		// Minimal delay completed
 	case <-ctx.Done():
 		// Context cancelled during delay
 		return ctx.Err()

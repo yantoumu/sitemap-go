@@ -723,17 +723,12 @@ func (sm *SitemapMonitor) extractAllKeywords(ctx context.Context, sitemapURLs []
 			var urls []string
 			var err error
 			
-			// Use shared rate limiter from pool (Resource Pool pattern - prevents leakage)
-			config := sm.concurrencyManager.GetCurrentConfig()
-			sitemapLimiter := sm.rateLimiterPool.GetOrCreate(config.SitemapRequestsPerSecond)
-			
-			rateLimitErr := sitemapLimiter.Execute(ctx, func() error {
-				keywords, urls, err = sm.extractKeywordsFromSitemap(ctx, url)
-				return err
-			})
+			// Direct execution without rate limiting for local operations
+			// Rate limiting should only apply to API calls, not local keyword extraction
+			keywords, urls, err = sm.extractKeywordsFromSitemap(ctx, url)
 			
 			responseTime := time.Since(startTime)
-			success := err == nil && rateLimitErr == nil
+			success := err == nil
 			
 			// Update performance metrics for adaptive adjustment
 			sm.concurrencyManager.UpdateMetrics(responseTime, success)
@@ -746,8 +741,6 @@ func (sm *SitemapMonitor) extractAllKeywords(ctx context.Context, sitemapURLs []
 			}
 			if err != nil {
 				result.error = err.Error()
-			} else if rateLimitErr != nil {
-				result.error = rateLimitErr.Error()
 			}
 			
 			resultsChan <- result
