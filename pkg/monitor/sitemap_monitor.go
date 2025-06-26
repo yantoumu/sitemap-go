@@ -830,31 +830,47 @@ func (sm *SitemapMonitor) extractKeywordsFromSitemap(ctx context.Context, sitema
 		return nil, nil, fmt.Errorf("failed to parse sitemap: %w", err)
 	}
 	
-	sm.log.WithField("url_count", len(urls)).Info("Sitemap parsed, extracting keywords")
-	
 	// Extract keywords from URLs
 	var keywords []string
 	var urlList []string
 	var failedCount int
 	
-	sm.log.WithField("total_urls", len(urls)).Info("Starting URL keyword extraction")
+	// Only log for large sitemaps to reduce noise
+	if len(urls) > 1000 {
+		sm.log.WithField("total_urls", len(urls)).Debug("Starting keyword extraction for large sitemap")
+	}
 	
-	for i, url := range urls {
-		// Log progress every 100 URLs
-		if i > 0 && i%100 == 0 {
-			sm.log.WithField("progress", fmt.Sprintf("%d/%d", i, len(urls))).Info("Keyword extraction progress")
+	// Pre-allocate slices for better performance
+	keywords = make([]string, 0, len(urls)/5) // Estimate 20% URLs will have keywords
+	urlList = make([]string, 0, len(urls)/5)
+	
+	// Batch process URLs in chunks of 1000 for better performance
+	batchSize := 1000
+	for batchStart := 0; batchStart < len(urls); batchStart += batchSize {
+		batchEnd := batchStart + batchSize
+		if batchEnd > len(urls) {
+			batchEnd = len(urls)
 		}
 		
-		urlKeywords, err := sm.keywordExtractor.Extract(url.Address)
-		if err != nil {
-			failedCount++
-			continue // Skip logging individual failures to reduce log spam
+		// Log progress for large sitemaps only (every 5000 URLs)
+		if batchStart > 0 && batchStart%5000 == 0 {
+			sm.log.WithField("progress", fmt.Sprintf("%d/%d", batchStart, len(urls))).Debug("Keyword extraction progress")
 		}
 		
-		if len(urlKeywords) > 0 {
-			primaryKeyword := sm.selectPrimaryKeyword(urlKeywords)
-			keywords = append(keywords, primaryKeyword)
-			urlList = append(urlList, url.Address)
+		// Process batch
+		for i := batchStart; i < batchEnd; i++ {
+			url := urls[i]
+			urlKeywords, err := sm.keywordExtractor.Extract(url.Address)
+			if err != nil {
+				failedCount++
+				continue
+			}
+			
+			if len(urlKeywords) > 0 {
+				primaryKeyword := sm.selectPrimaryKeyword(urlKeywords)
+				keywords = append(keywords, primaryKeyword)
+				urlList = append(urlList, url.Address)
+			}
 		}
 	}
 	
