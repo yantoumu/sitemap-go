@@ -890,65 +890,92 @@ func (sm *SitemapMonitor) deduplicateKeywords(keywords []string) []string {
 	return uniqueKeywords
 }
 
+// batchResult holds the result of a batch API query
+type batchResult struct {
+	batch     []string
+	trendData *api.APIResponse
+	err       error
+}
+
 // queryAndSubmitKeywords queries Google Trends in batches and submits results to backend
-// Uses simple batch processing with 4 keywords per batch
+// Uses concurrent batch processing with 8 keywords per batch and 4 workers
 func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords []string, keywordToSpecificURLMap map[string]string) error {
-	// Removed verbose logging - keywords are already deduplicated at this point
+	// Concurrent batch processing: 4 workers, 8 keywords per batch
+	const batchSize = 8
+	const concurrentWorkers = 4
 	
-	// Simple batch processing - no goroutines, no deadlock risk
-	const batchSize = 4
-	var allTrendData []api.Keyword
+	sm.log.WithFields(map[string]interface{}{
+		"total_keywords":     len(keywords),
+		"batch_size":        batchSize,
+		"concurrent_workers": concurrentWorkers,
+	}).Info("Starting concurrent API queries")
 	
-	// Process keywords in batches of 4 for SEOKey API
+	// Create batches
+	var batches [][]string
 	for i := 0; i < len(keywords); i += batchSize {
-		// Check context cancellation
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		
 		end := i + batchSize
 		if end > len(keywords) {
 			end = len(keywords)
 		}
-		
-		batch := keywords[i:end]
-		sm.log.WithField("batch_size", len(batch)).Debug("Processing keyword batch")
-		
-		// Query SEOKey API for batch with sequential execution
-		var trendData *api.APIResponse
-		err := sm.apiExecutor.Execute(ctx, func() error {
-			var queryErr error
-			trendData, queryErr = sm.apiClient.Query(ctx, batch)
-			return queryErr
-		})
-		if err != nil {
-			sm.secureLog.SafeError("SEOKey API batch query failed", err, map[string]interface{}{
-				"batch_size": len(batch),
+		batches = append(batches, keywords[i:end])
+	}
+	
+	// Channel for batch processing
+	batchChan := make(chan []string, len(batches))
+	resultChan := make(chan batchResult, len(batches))
+	
+	// Send batches to channel
+	for _, batch := range batches {
+		batchChan <- batch
+	}
+	close(batchChan)
+	
+	// Start concurrent workers
+	var wg sync.WaitGroup
+	for i := 0; i < concurrentWorkers; i++ {
+		wg.Add(1)
+		go sm.processBatchWorker(ctx, i, batchChan, resultChan, keywordToSpecificURLMap, &wg)
+	}
+	
+	// Wait for all workers to complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+	
+	// Collect results
+	var allTrendData []api.Keyword
+	var totalErrors int
+	
+	for result := range resultChan {
+		if result.err != nil {
+			totalErrors++
+			sm.secureLog.SafeError("Batch processing failed", result.err, map[string]interface{}{
+				"batch_size": len(result.batch),
 			})
 			
-			// Save failed batch
+			// Save failed keywords
 			var failedKeywords []string
-			for _, keyword := range batch {
+			for _, keyword := range result.batch {
 				if keywordToSpecificURLMap[keyword] != "" {
 					failedKeywords = append(failedKeywords, keyword)
 				}
 			}
 			if len(failedKeywords) > 0 {
-				if saveErr := sm.simpleTracker.SaveFailedKeywords(ctx, failedKeywords, "", "", err); saveErr != nil {
-					sm.secureLog.SafeError("Failed to save failed keyword batch", saveErr, nil)
+				if saveErr := sm.simpleTracker.SaveFailedKeywords(ctx, failedKeywords, "", "", result.err); saveErr != nil {
+					sm.secureLog.SafeError("Failed to save failed keywords", saveErr, nil)
 				}
 			}
-			continue // Continue with next batch for retryable errors
-		}
-		
-		// Collect successful results
-		if trendData != nil && len(trendData.Keywords) > 0 {
-			allTrendData = append(allTrendData, trendData.Keywords...)
-			sm.log.WithField("batch_success_count", len(trendData.Keywords)).Debug("Batch query successful")
+		} else if result.trendData != nil && len(result.trendData.Keywords) > 0 {
+			allTrendData = append(allTrendData, result.trendData.Keywords...)
 		}
 	}
+	
+	sm.log.WithFields(map[string]interface{}{
+		"successful_results": len(allTrendData),
+		"failed_batches":    totalErrors,
+		"total_batches":     len(batches),
+	}).Info("Concurrent API queries completed")
 	
 	if len(allTrendData) == 0 {
 		return fmt.Errorf("no successful trend data retrieved from any batch")
@@ -1063,6 +1090,63 @@ func (sm *SitemapMonitor) Close() error {
 	}
 	
 	return nil
+}
+
+// processBatchWorker processes batches of keywords concurrently
+func (sm *SitemapMonitor) processBatchWorker(ctx context.Context, workerID int, batchChan <-chan []string, resultChan chan<- batchResult, keywordToSpecificURLMap map[string]string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	
+	sm.log.WithField("worker_id", workerID).Debug("Starting batch worker")
+	
+	for batch := range batchChan {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			resultChan <- batchResult{batch: batch, err: ctx.Err()}
+			return
+		default:
+		}
+		
+		sm.log.WithFields(map[string]interface{}{
+			"worker_id":  workerID,
+			"batch_size": len(batch),
+		}).Debug("Processing batch")
+		
+		// Query API with rate limiting
+		var trendData *api.APIResponse
+		err := sm.apiExecutor.Execute(ctx, func() error {
+			var queryErr error
+			trendData, queryErr = sm.apiClient.Query(ctx, batch)
+			return queryErr
+		})
+		
+		// Send result
+		resultChan <- batchResult{
+			batch:     batch,
+			trendData: trendData,
+			err:       err,
+		}
+		
+		if err != nil {
+			sm.log.WithFields(map[string]interface{}{
+				"worker_id":  workerID,
+				"batch_size": len(batch),
+				"error":      err.Error(),
+			}).Warn("Batch query failed")
+		} else {
+			resultCount := 0
+			if trendData != nil {
+				resultCount = len(trendData.Keywords)
+			}
+			sm.log.WithFields(map[string]interface{}{
+				"worker_id":     workerID,
+				"batch_size":    len(batch),
+				"result_count":  resultCount,
+			}).Debug("Batch query successful")
+		}
+	}
+	
+	sm.log.WithField("worker_id", workerID).Debug("Batch worker completed")
 }
 
 // Helper function to parse URL
