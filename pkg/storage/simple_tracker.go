@@ -140,7 +140,7 @@ func (st *SimpleTracker) SaveFailedKeywords(ctx context.Context, keywords []stri
 		updatedFailed = append(updatedFailed, failed)
 	}
 	
-	st.log.WithField("failed_keywords", len(keywords)).Info("Saving failed keywords for retry")
+	st.log.WithField("failed_keywords", len(keywords)).Debug("Saved failed keywords for retry")
 	return st.storage.Save(ctx, "failed_keywords", updatedFailed)
 }
 

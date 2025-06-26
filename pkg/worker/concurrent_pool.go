@@ -251,10 +251,8 @@ func (p *ConcurrentPool) processTask(workerID int, task Task) {
 	startTime := time.Now()
 	taskID := task.GetID()
 	
-	p.log.WithFields(map[string]interface{}{
-		"worker_id": workerID,
-		"task_id":   taskID,
-	}).Debug("Processing task")
+	// Remove per-task debug logs to reduce log noise
+	// Task processing is tracked via metrics instead
 	
 	// Calculate adaptive timeout for this task
 	timeout := p.calculateTaskTimeout(task)
@@ -263,10 +261,7 @@ func (p *ConcurrentPool) processTask(workerID int, task Task) {
 	taskCtx, cancel := context.WithTimeout(p.ctx, timeout)
 	defer cancel()
 	
-	p.log.WithFields(map[string]interface{}{
-		"task_id": taskID,
-		"timeout": timeout,
-	}).Debug("Using calculated timeout for task")
+	// Remove per-task timeout debug logs to reduce log noise
 	
 	// Execute task
 	var err error
@@ -322,12 +317,8 @@ func (p *ConcurrentPool) processTask(workerID int, task Task) {
 		p.log.WithField("task_id", taskID).Warn("Result queue full, dropping result")
 	}
 	
-	p.log.WithFields(map[string]interface{}{
-		"worker_id": workerID,
-		"task_id":   taskID,
-		"success":   success,
-		"duration":  duration,
-	}).Debug("Task completed")
+	// Remove per-task completion debug logs to reduce log noise
+	// Task metrics are tracked via other mechanisms
 }
 
 // resultCollector handles result processing

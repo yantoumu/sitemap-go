@@ -830,14 +830,13 @@ func (sm *SitemapMonitor) extractKeywordsFromSitemap(ctx context.Context, sitema
 	// Extract keywords from URLs
 	var keywords []string
 	var urlList []string
+	var failedCount int
 	
 	for _, url := range urls {
 		urlKeywords, err := sm.keywordExtractor.Extract(url.Address)
 		if err != nil {
-			sm.secureLog.WarnWithURL("Failed to extract keywords from URL", url.Address, map[string]interface{}{
-				"error": err.Error(),
-			})
-			continue
+			failedCount++
+			continue // Skip logging individual failures to reduce log spam
 		}
 		
 		if len(urlKeywords) > 0 {
@@ -845,6 +844,15 @@ func (sm *SitemapMonitor) extractKeywordsFromSitemap(ctx context.Context, sitema
 			keywords = append(keywords, primaryKeyword)
 			urlList = append(urlList, url.Address)
 		}
+	}
+	
+	// Log summary only if there are significant failures
+	if failedCount > 10 {
+		sm.secureLog.WarnWithURL("High keyword extraction failure rate", sitemapURL, map[string]interface{}{
+			"failed_count": failedCount,
+			"total_urls":   len(urls),
+			"failure_rate": float64(failedCount) / float64(len(urls)),
+		})
 	}
 	
 	sm.secureLog.DebugWithURL("Keywords extracted from sitemap", sitemapURL, map[string]interface{}{
@@ -871,23 +879,32 @@ func (sm *SitemapMonitor) deduplicateKeywords(keywords []string) []string {
 }
 
 // queryAndSubmitKeywords queries Google Trends in batches and submits results to backend
+// Uses simple batch processing with 4 keywords per batch
 func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords []string, keywordToSpecificURLMap map[string]string) error {
 	sm.log.WithField("keyword_count", len(keywords)).Info("Querying Google Trends API for deduplicated keywords")
 	
-	// Split keywords into batches of 8 (Google Trends limit is 10, we use 8 for safety)
-	const batchSize = 8
+	// Simple batch processing - no goroutines, no deadlock risk
+	const batchSize = 4
 	var allTrendData []api.Keyword
 	
+	// Process keywords in batches of 4
 	for i := 0; i < len(keywords); i += batchSize {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		
 		end := i + batchSize
 		if end > len(keywords) {
 			end = len(keywords)
 		}
 		
 		batch := keywords[i:end]
-		sm.log.WithField("batch_size", len(batch)).WithField("batch_start", i).Debug("Processing keyword batch")
+		sm.log.WithField("batch_size", len(batch)).Debug("Processing keyword batch")
 		
-		// Query Google Trends API for this batch with 1-second interval control
+		// Query Google Trends API for this batch with sequential execution
 		var trendData *api.APIResponse
 		err := sm.apiExecutor.Execute(ctx, func() error {
 			var queryErr error
@@ -897,16 +914,18 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 		if err != nil {
 			sm.secureLog.SafeError("Google Trends API batch query failed", err, map[string]interface{}{
 				"batch_size": len(batch),
-				"batch_start": i,
 			})
 			
 			// Save this batch as failed and continue with next batch
+			var failedKeywords []string
 			for _, keyword := range batch {
-				specificURL := keywordToSpecificURLMap[keyword]
-				if specificURL != "" {
-					if saveErr := sm.simpleTracker.SaveFailedKeywords(ctx, []string{keyword}, specificURL, "", err); saveErr != nil {
-						sm.secureLog.SafeError("Failed to save failed keyword", saveErr, nil)
-					}
+				if keywordToSpecificURLMap[keyword] != "" {
+					failedKeywords = append(failedKeywords, keyword)
+				}
+			}
+			if len(failedKeywords) > 0 {
+				if saveErr := sm.simpleTracker.SaveFailedKeywords(ctx, failedKeywords, "", "", err); saveErr != nil {
+					sm.secureLog.SafeError("Failed to save failed keyword batch", saveErr, nil)
 				}
 			}
 			continue // Continue with next batch for retryable errors

@@ -108,7 +108,10 @@ func (p *RSSParser) Parse(ctx context.Context, rssURL string) ([]URL, error) {
 		urls = append(urls, urlStruct)
 	}
 
-	p.log.WithField("count", len(urls)).Info("Successfully parsed RSS feed")
+	// Only log for large RSS feeds to reduce log noise
+	if len(urls) > 100 {
+		p.log.WithField("count", len(urls)).Info("Successfully parsed large RSS feed")
+	}
 	return urls, nil
 }
 

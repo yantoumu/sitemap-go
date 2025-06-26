@@ -105,13 +105,13 @@ func (p *XMLParser) Parse(ctx context.Context, sitemapURL string) ([]URL, error)
 			// Parse URL to apply filters
 		parsedURL, err := url.Parse(xmlURL.Loc)
 		if err != nil {
-			p.log.WithError(err).WithField("url", xmlURL.Loc).Debug("Failed to parse URL")
+			// Skip invalid URLs silently to avoid log spam
 			continue
 		}
 
 			// Apply filters
 		if p.shouldExclude(parsedURL) {
-			p.log.WithField("url", xmlURL.Loc).Debug("URL excluded by filter")
+			// Skip excluded URLs silently to avoid log spam
 			continue
 		}
 
@@ -128,7 +128,10 @@ func (p *XMLParser) Parse(ctx context.Context, sitemapURL string) ([]URL, error)
 		urls = append(urls, url)
 	}
 
-	p.log.WithField("count", len(urls)).Info("Successfully parsed sitemap")
+	// Only log for large sitemaps to reduce log noise
+	if len(urls) > 100 {
+		p.log.WithField("count", len(urls)).Info("Successfully parsed large sitemap")
+	}
 	return urls, nil
 }
 

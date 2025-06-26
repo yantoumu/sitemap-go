@@ -98,10 +98,13 @@ func (p *TXTParser) Parse(ctx context.Context, txtURL string) ([]URL, error) {
 		return nil, fmt.Errorf("error reading TXT sitemap: %w", err)
 	}
 
-	p.log.WithFields(map[string]interface{}{
-		"count":      len(urls),
-		"lines_read": lineCount,
-	}).Info("Successfully parsed TXT sitemap")
+	// Only log for large sitemaps to reduce log noise
+	if len(urls) > 100 {
+		p.log.WithFields(map[string]interface{}{
+			"count":      len(urls),
+			"lines_read": lineCount,
+		}).Info("Successfully parsed large TXT sitemap")
+	}
 	
 	return urls, nil
 }
