@@ -29,6 +29,26 @@ func TestCircuitBreakerErrorClassifier_ClassifyError(t *testing.T) {
 			expected: ErrorSeverityFatal,
 		},
 		{
+			name:     "Chinese circuit breaker open",
+			err:      errors.New("熔断器已打开"),
+			expected: ErrorSeverityFatal,
+		},
+		{
+			name:     "Chinese circuit breaker",
+			err:      errors.New("熔断器打开"),
+			expected: ErrorSeverityFatal,
+		},
+		{
+			name:     "Breaker with open",
+			err:      errors.New("breaker is open"),
+			expected: ErrorSeverityFatal,
+		},
+		{
+			name:     "Mixed language error",
+			err:      errors.New("some breaker 打开 error"),
+			expected: ErrorSeverityFatal,
+		},
+		{
 			name:     "rate limit error",
 			err:      errors.New("rate limit exceeded"),
 			expected: ErrorSeverityFatal,
@@ -96,6 +116,16 @@ func TestCircuitBreakerErrorClassifier_ShouldStopProcessing(t *testing.T) {
 		{
 			name:     "circuit breaker is open - should stop",
 			err:      errors.New("circuit breaker is open"),
+			expected: true,
+		},
+		{
+			name:     "Chinese circuit breaker - should stop",
+			err:      errors.New("熔断器已打开"),
+			expected: true,
+		},
+		{
+			name:     "Chinese circuit breaker open - should stop",
+			err:      errors.New("熔断器打开"),
 			expected: true,
 		},
 		{

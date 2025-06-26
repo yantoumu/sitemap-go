@@ -36,8 +36,10 @@ func (c *CircuitBreakerErrorClassifier) ClassifyError(err error) ErrorSeverity {
 	errStr := strings.ToLower(err.Error())
 
 	// Circuit breaker errors are fatal - stop all processing
-	if strings.Contains(errStr, "circuit breaker is open") ||
-		strings.Contains(errStr, "circuit breaker") {
+	// Support multiple languages and variations
+	if strings.Contains(errStr, "circuit breaker") ||
+		strings.Contains(errStr, "熔断器") ||
+		strings.Contains(errStr, "breaker") && (strings.Contains(errStr, "open") || strings.Contains(errStr, "打开")) {
 		return ErrorSeverityFatal
 	}
 
