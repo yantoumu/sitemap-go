@@ -71,6 +71,7 @@ jobs:
         BACKEND_URL: ${{ secrets.BACKEND_API_URL }}
         BACKEND_API_KEY: ${{ secrets.BACKEND_API_KEY }}
         TRENDS_API_URL: ${{ secrets.TRENDS_API_URL }}
+        ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
         
         # 基础配置 (可调整)
         SITEMAP_WORKERS: ${{ github.event.inputs.sitemap_workers || '15' }}
@@ -101,9 +102,22 @@ jobs:
           exit 1
         fi
         
+        if [ -z "$BACKEND_API_KEY" ]; then
+          echo "❌ ERROR: BACKEND_API_KEY secret is required"
+          echo "Please set BACKEND_API_KEY in GitHub repository secrets"
+          exit 1
+        fi
+        
         if [ -z "$TRENDS_API_URL" ]; then
           echo "❌ ERROR: TRENDS_API_URL secret is required"
           echo "Please set TRENDS_API_URL in GitHub repository secrets"
+          exit 1
+        fi
+        
+        if [ -z "$ENCRYPTION_KEY" ]; then
+          echo "❌ ERROR: ENCRYPTION_KEY secret is required"
+          echo "Please set ENCRYPTION_KEY in GitHub repository secrets"
+          echo "Generate with: openssl rand -base64 32"
           exit 1
         fi
         
