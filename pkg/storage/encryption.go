@@ -20,11 +20,23 @@ type EncryptionConfig struct {
 
 // DefaultEncryptionConfig returns default encryption configuration
 func DefaultEncryptionConfig() EncryptionConfig {
-	salt := make([]byte, 32)
-	if _, err := rand.Read(salt); err != nil {
-		// Fallback to deterministic salt if random fails
-		salt = []byte("sitemap-go-default-salt-32-bytes!")
+	// Use deterministic salt for consistent key derivation across restarts
+	// This ensures the same passphrase always generates the same encryption key
+	salt := []byte("sitemap-go-default-salt-32-bytes!")
+	
+	return EncryptionConfig{
+		KeyDerivationSalt: salt,
+		KeySize:           32, // AES-256
 	}
+}
+
+// DeterministicEncryptionConfig creates config with salt derived from passphrase
+// This ensures consistent encryption/decryption across program restarts
+func DeterministicEncryptionConfig(passphrase string) EncryptionConfig {
+	// Create deterministic salt from passphrase using SHA-256
+	// This ensures same passphrase always produces same salt
+	hash := sha256.Sum256([]byte(passphrase + "-sitemap-go-salt-v1"))
+	salt := hash[:]
 	
 	return EncryptionConfig{
 		KeyDerivationSalt: salt,

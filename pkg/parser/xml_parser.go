@@ -1,16 +1,13 @@
 package parser
 
 import (
-	"compress/gzip"
 	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"strings"
 	"sync"
-	"time"
 
 	"sitemap-go/pkg/logger"
 )
@@ -38,7 +35,7 @@ type xmlSitemapIndex struct {
 }
 
 type XMLParser struct {
-	httpClient      *http.Client
+	httpClient      *HTTPClient
 	filters         []Filter
 	log             *logger.Logger
 	concurrentLimit int
@@ -46,12 +43,10 @@ type XMLParser struct {
 
 func NewXMLParser() *XMLParser {
 	return &XMLParser{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		httpClient:      NewHTTPClient(),
 		filters:         make([]Filter, 0),
 		log:             logger.GetLogger().WithField("component", "xml_parser"),
-		concurrentLimit: 5, // Default concurrent sitemap processing limit
+		concurrentLimit: 2, // 降低并发数：减少服务器压力，避免被限流
 	}
 }
 
@@ -168,38 +163,21 @@ func (p *XMLParser) AddFilter(filter Filter) {
 }
 
 func (p *XMLParser) downloadSitemap(ctx context.Context, sitemapURL string) (io.ReadCloser, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", sitemapURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
-	}
-
-	// Check if content is gzipped
-	if strings.HasSuffix(strings.ToLower(sitemapURL), ".gz") ||
-		resp.Header.Get("Content-Encoding") == "gzip" {
-		return gzip.NewReader(resp.Body)
-	}
-
-	return resp.Body, nil
+	return p.httpClient.Download(ctx, sitemapURL)
 }
 
-// processSitemapsIndexConcurrently processes multiple sitemaps concurrently
+// processSitemapsIndexConcurrently processes multiple sitemaps concurrently with improved safety
 func (p *XMLParser) processSitemapsIndexConcurrently(ctx context.Context, sitemaps []xmlSitemapRef) []URL {
-	var (
-		wg     sync.WaitGroup
-		mu     sync.Mutex
-		allURLs []URL
-		sem    = make(chan struct{}, p.concurrentLimit)
-	)
+	// Use channel for safe result collection instead of shared slice
+	type sitemapResult struct {
+		urls []URL
+		err  error
+		url  string
+	}
+	
+	resultChan := make(chan sitemapResult, len(sitemaps))
+	sem := make(chan struct{}, p.concurrentLimit)
+	var wg sync.WaitGroup
 
 	for _, sitemap := range sitemaps {
 		if sitemap.Loc == "" {
@@ -218,6 +196,7 @@ func (p *XMLParser) processSitemapsIndexConcurrently(ctx context.Context, sitema
 			select {
 			case <-ctx.Done():
 				p.log.Warn("Context cancelled, stopping sitemap processing")
+				resultChan <- sitemapResult{urls: nil, err: ctx.Err(), url: sitemapLoc}
 				return
 			default:
 			}
@@ -225,24 +204,52 @@ func (p *XMLParser) processSitemapsIndexConcurrently(ctx context.Context, sitema
 			p.log.WithField("url", sitemapLoc).Debug("Processing sub-sitemap")
 			
 			subURLs, err := p.Parse(ctx, sitemapLoc)
+			
+			// Send result via channel (thread-safe)
+			resultChan <- sitemapResult{
+				urls: subURLs,
+				err:  err,
+				url:  sitemapLoc,
+			}
+			
 			if err != nil {
 				p.log.WithError(err).WithField("url", sitemapLoc).Warn("Failed to parse sub-sitemap")
-				return
+			} else {
+				p.log.WithFields(map[string]interface{}{
+					"url":   sitemapLoc,
+					"count": len(subURLs),
+				}).Debug("Sub-sitemap processed successfully")
 			}
-
-			// Safely append URLs
-			mu.Lock()
-			allURLs = append(allURLs, subURLs...)
-			mu.Unlock()
-			
-			p.log.WithFields(map[string]interface{}{
-				"url":   sitemapLoc,
-				"count": len(subURLs),
-			}).Debug("Sub-sitemap processed successfully")
 		}(sitemap.Loc)
 	}
 
-	wg.Wait()
+	// Close result channel when all workers complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results efficiently without mutex contention
+	var allURLs []URL
+	totalExpectedURLs := 0 // Pre-estimate capacity
+	
+	// First pass: collect results and estimate total size
+	results := make([]sitemapResult, 0, len(sitemaps))
+	for result := range resultChan {
+		results = append(results, result)
+		if result.err == nil {
+			totalExpectedURLs += len(result.urls)
+		}
+	}
+	
+	// Second pass: allocate exact capacity and copy (避免多次reallocation)
+	allURLs = make([]URL, 0, totalExpectedURLs)
+	for _, result := range results {
+		if result.err == nil {
+			allURLs = append(allURLs, result.urls...)
+		}
+	}
+
 	p.log.WithField("total_urls", len(allURLs)).Info("Completed processing sitemap index")
 	return allURLs
 }
@@ -261,10 +268,4 @@ func generateURLID(address string) string {
 	return fmt.Sprintf("%d", hash(address))
 }
 
-func hash(s string) uint32 {
-	h := uint32(0)
-	for _, c := range s {
-		h = h*31 + uint32(c)
-	}
-	return h
-}
+

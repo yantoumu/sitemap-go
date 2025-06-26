@@ -1,20 +1,19 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/valyala/fasthttp"
 	"sitemap-go/pkg/logger"
 )
 
 type httpAPIClient struct {
-	baseURL         string
+	urlPool         *URLPool  // Replaced baseURL with URL pool for load balancing
 	apiKey          string
 	connManager     *ConnectionManager
 	breaker         *CircuitBreaker
@@ -34,9 +33,12 @@ func NewHTTPAPIClient(baseURL, apiKey string) APIClient {
 }
 
 // NewHTTPAPIClientWithConfig creates a new HTTP API client with custom connection config
+// Supports single URL or comma-separated multiple URLs for load balancing
 func NewHTTPAPIClientWithConfig(baseURL, apiKey string, connConfig ConnectionConfig) APIClient {
+	urlPool := NewURLPool(baseURL) // Create URL pool from single or multiple URLs
+	
 	return &httpAPIClient{
-		baseURL:         baseURL,
+		urlPool:         urlPool,
 		apiKey:          apiKey,
 		connManager:     NewConnectionManager(connConfig),
 		breaker:         NewCircuitBreaker(5, 30*time.Second),
@@ -48,8 +50,10 @@ func NewHTTPAPIClientWithConfig(baseURL, apiKey string, connConfig ConnectionCon
 
 // NewHTTPAPIClientWithAdaptiveBreaker creates client with adaptive circuit breaker
 func NewHTTPAPIClientWithAdaptiveBreaker(baseURL, apiKey string, connConfig ConnectionConfig, useAdaptive bool) APIClient {
+	urlPool := NewURLPool(baseURL) // Create URL pool from single or multiple URLs
+	
 	client := &httpAPIClient{
-		baseURL:         baseURL,
+		urlPool:         urlPool,
 		apiKey:          apiKey,
 		connManager:     NewConnectionManager(connConfig),
 		breaker:         NewCircuitBreaker(5, 30*time.Second),
@@ -94,43 +98,45 @@ func (c *httpAPIClient) Query(ctx context.Context, keywords []string) (*APIRespo
 	return result, nil
 }
 
+
 func (c *httpAPIClient) doQuery(ctx context.Context, keywords []string, result **APIResponse) error {
-	// Prepare request body
-	reqBody := map[string]interface{}{
-		"keywords": keywords,
+	// Create fasthttp request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	
+	// Set request properties - use next URL from pool for load balancing
+	baseURL := c.urlPool.Next()
+	if baseURL == "" {
+		return fmt.Errorf("no URLs available in URL pool")
 	}
 	
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
-	}
+	// Build URL with keywords as query parameters: keyword=key1,key2,key3
+	keywordParam := strings.Join(keywords, ",")
+	fullURL := baseURL + keywordParam
+	req.SetRequestURI(fullURL)
+	req.Header.SetMethod(fasthttp.MethodGet)
 	
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/keywords/batch", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	// Set authorization header only if API key is provided
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
-	
-	// Set headers
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	
 	// Execute request using connection manager
-	resp, err := c.connManager.GetClient().Do(req)
+	err := c.connManager.GetFastHTTPClient().DoTimeout(req, resp, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
 	
 	// Check status code
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode(), string(resp.Body()))
 	}
 	
 	// Parse response
 	var apiResp APIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+	if err := json.Unmarshal(resp.Body(), &apiResp); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
 	}
 	
@@ -138,50 +144,6 @@ func (c *httpAPIClient) doQuery(ctx context.Context, keywords []string, result *
 	return nil
 }
 
-func (c *httpAPIClient) HealthCheck(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/health", nil)
-	if err != nil {
-		return err
-	}
-	
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	
-	resp, err := c.connManager.GetClient().Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("health check failed with status %d", resp.StatusCode)
-	}
-	
-	return nil
-}
-
-func (c *httpAPIClient) GetMetrics() *APIMetrics {
-	total := atomic.LoadUint64(&c.totalRequests)
-	failed := atomic.LoadUint64(&c.failedRequests)
-	latency := atomic.LoadUint64(&c.totalLatency)
-	
-	avgLatency := float64(0)
-	if total > 0 {
-		avgLatency = float64(latency) / float64(total)
-	}
-	
-	successRate := float64(1)
-	if total > 0 {
-		successRate = float64(total-failed) / float64(total)
-	}
-	
-	
-	return &APIMetrics{
-		RequestCount:  int64(total),
-		ErrorCount:    int64(failed),
-		SuccessRate:   successRate,
-		AvgLatency:    avgLatency,
-	}
-}
 
 func (s CircuitState) String() string {
 	switch s {

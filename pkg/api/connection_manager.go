@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/valyala/fasthttp"
 	"sitemap-go/pkg/logger"
 )
 
@@ -53,9 +54,10 @@ func HighThroughputConnectionConfig() ConnectionConfig {
 
 // ConnectionManager manages HTTP client connections with pooling and optimization
 type ConnectionManager struct {
-	config ConnectionConfig
-	client *http.Client
-	log    *logger.Logger
+	config     ConnectionConfig
+	client     *http.Client
+	fastClient *fasthttp.Client
+	log        *logger.Logger
 }
 
 // NewConnectionManager creates a new connection manager with specified config
@@ -80,16 +82,31 @@ func NewConnectionManager(config ConnectionConfig) *ConnectionManager {
 		Timeout:   config.RequestTimeout,
 	}
 
+	// Create fasthttp client with similar configuration
+	fastClient := &fasthttp.Client{
+		MaxConnsPerHost:     config.MaxConnsPerHost,
+		MaxIdleConnDuration: config.IdleConnTimeout,
+		ReadTimeout:         config.RequestTimeout,
+		WriteTimeout:        config.RequestTimeout,
+		MaxConnDuration:     config.KeepAlive,
+	}
+
 	return &ConnectionManager{
-		config: config,
-		client: client,
-		log:    logger.GetLogger().WithField("component", "connection_manager"),
+		config:     config,
+		client:     client,
+		fastClient: fastClient,
+		log:        logger.GetLogger().WithField("component", "connection_manager"),
 	}
 }
 
 // GetClient returns the managed HTTP client
 func (cm *ConnectionManager) GetClient() *http.Client {
 	return cm.client
+}
+
+// GetFastHTTPClient returns the managed fasthttp client
+func (cm *ConnectionManager) GetFastHTTPClient() *fasthttp.Client {
+	return cm.fastClient
 }
 
 // GetConnectionStats returns current connection statistics

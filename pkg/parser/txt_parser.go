@@ -2,11 +2,9 @@ package parser
 
 import (
 	"bufio"
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -15,7 +13,7 @@ import (
 )
 
 type TXTParser struct {
-	httpClient      *http.Client
+	httpClient      *HTTPClient
 	filters         []Filter
 	log             *logger.Logger
 	maxLines        int
@@ -24,9 +22,7 @@ type TXTParser struct {
 
 func NewTXTParser() *TXTParser {
 	return &TXTParser{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		httpClient:    NewHTTPClient(),
 		filters:       make([]Filter, 0),
 		log:           logger.GetLogger().WithField("component", "txt_parser"),
 		maxLines:      50000,  // Limit to prevent memory issues
@@ -141,32 +137,7 @@ func (p *TXTParser) AddFilter(filter Filter) {
 }
 
 func (p *TXTParser) downloadTXT(ctx context.Context, txtURL string) (io.ReadCloser, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", txtURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	// Set appropriate headers
-	req.Header.Set("Accept", "text/plain, text/*")
-	req.Header.Set("User-Agent", "Sitemap-Go/1.0")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
-	}
-
-	// Check if content is gzipped
-	if strings.HasSuffix(strings.ToLower(txtURL), ".gz") ||
-		resp.Header.Get("Content-Encoding") == "gzip" {
-		return gzip.NewReader(resp.Body)
-	}
-
-	return resp.Body, nil
+	return p.httpClient.Download(ctx, txtURL)
 }
 
 func (p *TXTParser) processURL(urlStr string) (*URL, error) {

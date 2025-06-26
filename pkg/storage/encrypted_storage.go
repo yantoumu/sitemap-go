@@ -27,8 +27,9 @@ func NewEncryptedFileStorage(config StorageConfig, passphrase string) (*Encrypte
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 	
-	// Create encryptor
-	encConfig := DefaultEncryptionConfig()
+	// Create encryptor with deterministic salt based on passphrase
+	// This ensures consistent encryption/decryption across program restarts
+	encConfig := DeterministicEncryptionConfig(passphrase)
 	encryptor, err := NewAESEncryptor(passphrase, encConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create encryptor: %w", err)

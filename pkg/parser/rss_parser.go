@@ -1,12 +1,10 @@
 package parser
 
 import (
-	"compress/gzip"
 	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -35,7 +33,7 @@ type rssFeed struct {
 }
 
 type RSSParser struct {
-	httpClient      *http.Client
+	httpClient      *HTTPClient
 	filters         []Filter
 	log             *logger.Logger
 	concurrentLimit int
@@ -43,9 +41,7 @@ type RSSParser struct {
 
 func NewRSSParser() *RSSParser {
 	return &RSSParser{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		httpClient:      NewHTTPClient(),
 		filters:         make([]Filter, 0),
 		log:             logger.GetLogger().WithField("component", "rss_parser"),
 		concurrentLimit: 5,
@@ -150,31 +146,7 @@ func (p *RSSParser) AddFilter(filter Filter) {
 }
 
 func (p *RSSParser) downloadRSS(ctx context.Context, rssURL string) (io.ReadCloser, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", rssURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	// Set appropriate headers for RSS
-	req.Header.Set("Accept", "application/rss+xml, application/xml, text/xml")
-	req.Header.Set("User-Agent", "Sitemap-Go/1.0")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
-	}
-
-	// Check if content is gzipped
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		return gzip.NewReader(resp.Body)
-	}
-
-	return resp.Body, nil
+	return p.httpClient.Download(ctx, rssURL)
 }
 
 func (p *RSSParser) shouldExclude(u *url.URL) bool {

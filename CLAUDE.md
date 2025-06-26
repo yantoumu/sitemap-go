@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Go-based content monitoring system that analyzes website sitemaps, extracts keywords, and monitors content changes. The project is currently in the initial development phase with a comprehensive PRD document outlining the complete architecture.
+This is a Go-based content monitoring script that analyzes website sitemaps, extracts keywords, and queries Google Trends API for keyword data. The project is a command-line script designed for automated monitoring and GitHub Actions integration.
 
 ## Development Commands
 
@@ -13,11 +13,14 @@ This is a Go-based content monitoring system that analyzes website sitemaps, ext
 # Build the project
 go build -o sitemap-go .
 
-# Run the project
-go run main.go
+# Run the monitoring script
+./sitemap-go
 
-# Run with specific config (when implemented)
-./sitemap-go -config config/production.yaml
+# Run with specific sitemaps
+./sitemap-go -sitemaps "https://poki.com/sitemap.xml,https://y8.com/sitemap.xml"
+
+# Run with debug logging and custom workers
+./sitemap-go -debug -workers 16
 ```
 
 ### Testing Commands
