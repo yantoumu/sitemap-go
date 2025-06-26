@@ -32,6 +32,7 @@ type SitemapMonitor struct {
 	concurrencyManager *AdaptiveConcurrencyManager // Dynamic concurrency control
 	rateLimiter        *RateLimitedExecutor    // Rate limiting for requests
 	rateLimiterPool    *RateLimiterPool        // Pool for managing rate limiters (Resource Pool pattern)
+	apiExecutor        *api.SequentialExecutor // Sequential API execution with 1s interval
 	log                *logger.Logger
 	secureLog          *logger.SecurityLogger  // Security-aware logger for sensitive data
 }
@@ -141,6 +142,7 @@ func NewSitemapMonitor(cfg interface{}) (*SitemapMonitor, error) {
 		concurrencyManager: concurrencyManager,
 		rateLimiter:        rateLimiter,
 		rateLimiterPool:    rateLimiterPool,
+		apiExecutor:        api.NewSequentialExecutor(1 * time.Second), // 1 second minimum interval
 		log:                logger.GetLogger().WithField("component", "sitemap_monitor"),
 		secureLog:          logger.GetSecurityLogger(),
 	}, nil
@@ -253,6 +255,7 @@ func createSitemapMonitorInternal(config MonitorConfig, backendURL, apiKey strin
 		concurrencyManager: concurrencyManager,
 		rateLimiter:        rateLimiter,
 		rateLimiterPool:    rateLimiterPool,
+		apiExecutor:        api.NewSequentialExecutor(1 * time.Second), // 1 second minimum interval
 		log:                logger.GetLogger().WithField("component", "sitemap_monitor"),
 		secureLog:          logger.GetSecurityLogger(),
 	}, nil
@@ -884,8 +887,13 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 		batch := keywords[i:end]
 		sm.log.WithField("batch_size", len(batch)).WithField("batch_start", i).Debug("Processing keyword batch")
 		
-		// Query Google Trends API for this batch
-		trendData, err := sm.apiClient.Query(ctx, batch)
+		// Query Google Trends API for this batch with 1-second interval control
+		var trendData *api.APIResponse
+		err := sm.apiExecutor.Execute(ctx, func() error {
+			var queryErr error
+			trendData, queryErr = sm.apiClient.Query(ctx, batch)
+			return queryErr
+		})
 		if err != nil {
 			sm.secureLog.SafeError("Google Trends API batch query failed", err, map[string]interface{}{
 				"batch_size": len(batch),
