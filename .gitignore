@@ -49,4 +49,7 @@ Thumbs.db
 .env
 .env.local
 .env.production
-.env.staging
+.env.staging# Documentation files
+*.md
+!README.md
+!CLAUDE.md
