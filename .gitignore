@@ -55,3 +55,4 @@ Thumbs.db
 *.md
 !README.md
 !CLAUDE.md
+!docs/*.md
