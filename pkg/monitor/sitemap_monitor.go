@@ -32,6 +32,7 @@ type SitemapMonitor struct {
 	concurrencyManager *AdaptiveConcurrencyManager // Dynamic concurrency control
 	rateLimiter        *RateLimitedExecutor    // Rate limiting for requests
 	rateLimiterPool    *RateLimiterPool        // Pool for managing rate limiters (Resource Pool pattern)
+	errorClassifier    api.ErrorClassifier     // Error classification for intelligent error handling
 	log                *logger.Logger
 	secureLog          *logger.SecurityLogger  // Security-aware logger for sensitive data
 }
@@ -141,6 +142,7 @@ func NewSitemapMonitor(cfg interface{}) (*SitemapMonitor, error) {
 		concurrencyManager: concurrencyManager,
 		rateLimiter:        rateLimiter,
 		rateLimiterPool:    rateLimiterPool,
+		errorClassifier:    api.NewCircuitBreakerErrorClassifier(),
 		log:                logger.GetLogger().WithField("component", "sitemap_monitor"),
 		secureLog:          logger.GetSecurityLogger(),
 	}, nil
@@ -253,6 +255,7 @@ func createSitemapMonitorInternal(config MonitorConfig, backendURL, apiKey strin
 		concurrencyManager: concurrencyManager,
 		rateLimiter:        rateLimiter,
 		rateLimiterPool:    rateLimiterPool,
+		errorClassifier:    api.NewCircuitBreakerErrorClassifier(),
 		log:                logger.GetLogger().WithField("component", "sitemap_monitor"),
 		secureLog:          logger.GetSecurityLogger(),
 	}, nil
@@ -892,7 +895,30 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 				"batch_start": i,
 			})
 			
-			// Save this batch as failed
+			// Use error classifier to determine processing action
+			if sm.errorClassifier.ShouldStopProcessing(err) {
+				sm.log.WithField("error_severity", sm.errorClassifier.ClassifyError(err)).Warn("Fatal error detected, stopping all batch processing")
+				
+				// Save all remaining keywords as failed due to fatal error
+				for j := i; j < len(keywords); j += batchSize {
+					endIdx := j + batchSize
+					if endIdx > len(keywords) {
+						endIdx = len(keywords)
+					}
+					remainingBatch := keywords[j:endIdx]
+					for _, keyword := range remainingBatch {
+						specificURL := keywordToSpecificURLMap[keyword]
+						if specificURL != "" {
+							if saveErr := sm.simpleTracker.SaveFailedKeywords(ctx, []string{keyword}, specificURL, "", err); saveErr != nil {
+								sm.secureLog.SafeError("Failed to save failed keyword", saveErr, nil)
+							}
+						}
+					}
+				}
+				break // Stop processing immediately for fatal errors
+			}
+			
+			// For non-fatal errors, save this batch as failed and continue
 			for _, keyword := range batch {
 				specificURL := keywordToSpecificURLMap[keyword]
 				if specificURL != "" {
@@ -901,7 +927,7 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 					}
 				}
 			}
-			continue // Continue with next batch instead of failing completely
+			continue // Continue with next batch for retryable errors
 		}
 		
 		// Collect successful results
