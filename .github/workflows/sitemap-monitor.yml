@@ -75,7 +75,7 @@ jobs:
         
         # 基础配置 (可调整)
         SITEMAP_WORKERS: ${{ github.event.inputs.sitemap_workers || '15' }}
-        API_WORKERS: ${{ github.event.inputs.api_workers || '2' }}
+        API_WORKERS: ${{ github.event.inputs.api_workers || '4' }}
         DEBUG: ${{ github.event.inputs.debug || 'false' }}
         
         # 性能配置 (GitHub Actions 优化)
