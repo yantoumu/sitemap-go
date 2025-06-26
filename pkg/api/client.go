@@ -16,10 +16,8 @@ type httpAPIClient struct {
 	urlPool         *URLPool  // Replaced baseURL with URL pool for load balancing
 	apiKey          string
 	connManager     *ConnectionManager
-	breaker         *CircuitBreaker
-	adaptiveBreaker *AdaptiveCircuitBreaker
+	retry           *SimpleRetry
 	log             *logger.Logger
-	useAdaptive     bool
 	
 	// Metrics
 	totalRequests uint64
@@ -41,25 +39,21 @@ func NewHTTPAPIClientWithConfig(baseURL, apiKey string, connConfig ConnectionCon
 		urlPool:         urlPool,
 		apiKey:          apiKey,
 		connManager:     NewConnectionManager(connConfig),
-		breaker:         NewCircuitBreaker(5, 30*time.Second),
-		adaptiveBreaker: NewAdaptiveCircuitBreaker(3, 10, 30*time.Second),
+		retry:           NewSimpleRetry(3, 1*time.Second), // 3 retries with 1s initial delay
 		log:             logger.GetLogger().WithField("component", "api_client"),
-		useAdaptive:     true, // Use adaptive breaker by default
 	}
 }
 
-// NewHTTPAPIClientWithAdaptiveBreaker creates client with adaptive circuit breaker
-func NewHTTPAPIClientWithAdaptiveBreaker(baseURL, apiKey string, connConfig ConnectionConfig, useAdaptive bool) APIClient {
+// NewHTTPAPIClientWithRetry creates client with configurable retry mechanism
+func NewHTTPAPIClientWithRetry(baseURL, apiKey string, connConfig ConnectionConfig, maxRetries int, retryDelay time.Duration) APIClient {
 	urlPool := NewURLPool(baseURL) // Create URL pool from single or multiple URLs
 	
 	client := &httpAPIClient{
 		urlPool:         urlPool,
 		apiKey:          apiKey,
 		connManager:     NewConnectionManager(connConfig),
-		breaker:         NewCircuitBreaker(5, 30*time.Second),
-		adaptiveBreaker: NewAdaptiveCircuitBreaker(3, 10, 30*time.Second),
+		retry:           NewSimpleRetry(maxRetries, retryDelay),
 		log:             logger.GetLogger().WithField("component", "api_client"),
-		useAdaptive:     useAdaptive,
 	}
 	return client
 }
@@ -74,18 +68,11 @@ func (c *httpAPIClient) Query(ctx context.Context, keywords []string) (*APIRespo
 	c.log.WithField("keywords_count", len(keywords)).Debug("Starting API query")
 	
 	var result *APIResponse
-	var err error
 	
-	// Use adaptive breaker if enabled, otherwise use standard breaker
-	if c.useAdaptive {
-		err = c.adaptiveBreaker.Execute(ctx, func() error {
-			return c.doQuery(ctx, keywords, &result)
-		})
-	} else {
-		err = c.breaker.Execute(ctx, func() error {
-			return c.doQuery(ctx, keywords, &result)
-		})
-	}
+	// Use simple retry mechanism
+	err := c.retry.Execute(ctx, func() error {
+		return c.doQuery(ctx, keywords, &result)
+	})
 	
 	if err != nil {
 		atomic.AddUint64(&c.failedRequests, 1)
@@ -145,15 +132,3 @@ func (c *httpAPIClient) doQuery(ctx context.Context, keywords []string, result *
 }
 
 
-func (s CircuitState) String() string {
-	switch s {
-	case StateClosed:
-		return "closed"
-	case StateOpen:
-		return "open"
-	case StateHalfOpen:
-		return "half-open"
-	default:
-		return "unknown"
-	}
-}
