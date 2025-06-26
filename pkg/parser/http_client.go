@@ -37,6 +37,22 @@ func NewHTTPClient() *HTTPClient {
 
 // Download fetches content from URL with browser-like headers
 func (h *HTTPClient) Download(ctx context.Context, targetURL string) (io.ReadCloser, error) {
+	// Validate URL first
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+	
+	// Check if URL has scheme
+	if parsedURL.Scheme == "" {
+		return nil, fmt.Errorf("URL missing scheme (http/https): %s", targetURL)
+	}
+	
+	// Check if URL has host
+	if parsedURL.Host == "" {
+		return nil, fmt.Errorf("URL missing host: %s", targetURL)
+	}
+
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)

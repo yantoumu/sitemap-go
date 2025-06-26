@@ -95,6 +95,13 @@ jobs:
         echo "  - API rate limit: $API_RATE_LIMIT req/sec"
         echo "  - Sitemap rate limit: $SITEMAP_RATE_LIMIT req/sec"
         
+        # 检查 SITEMAP_URLS 设置
+        if [ -z "$SITEMAP_URLS" ]; then
+          echo "📝 Note: SITEMAP_URLS not set, will use default sitemap list"
+        else
+          echo "📝 SITEMAP_URLS is configured (URLs are masked for security)"
+        fi
+        
         # 验证必需的环境变量
         if [ -z "$BACKEND_URL" ]; then
           echo "❌ ERROR: BACKEND_API_URL secret is required"
