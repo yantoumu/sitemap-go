@@ -112,13 +112,15 @@ jobs:
         
     - name: Upload monitoring results (on failure)
       if: failure()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: monitoring-logs-${{ github.run_number }}
         path: |
           ./data/
           *.log
         retention-days: 7
+        compression-level: 6
+        include-hidden-files: false
     
     - name: Create summary report
       if: always()
