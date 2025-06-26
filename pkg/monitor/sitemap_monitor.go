@@ -142,7 +142,7 @@ func NewSitemapMonitor(cfg interface{}) (*SitemapMonitor, error) {
 		concurrencyManager: concurrencyManager,
 		rateLimiter:        rateLimiter,
 		rateLimiterPool:    rateLimiterPool,
-		apiExecutor:        api.NewSequentialExecutor(1 * time.Second), // 1 second minimum interval
+		apiExecutor:        api.NewSequentialExecutor(), // Sequential execution, no forced delays
 		log:                logger.GetLogger().WithField("component", "sitemap_monitor"),
 		secureLog:          logger.GetSecurityLogger(),
 	}, nil
@@ -255,7 +255,7 @@ func createSitemapMonitorInternal(config MonitorConfig, backendURL, apiKey strin
 		concurrencyManager: concurrencyManager,
 		rateLimiter:        rateLimiter,
 		rateLimiterPool:    rateLimiterPool,
-		apiExecutor:        api.NewSequentialExecutor(1 * time.Second), // 1 second minimum interval
+		apiExecutor:        api.NewSequentialExecutor(), // Sequential execution, no forced delays
 		log:                logger.GetLogger().WithField("component", "sitemap_monitor"),
 		secureLog:          logger.GetSecurityLogger(),
 	}, nil

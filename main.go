@@ -58,7 +58,7 @@ func main() {
 	defaultDebug := getEnvBoolOrDefault("DEBUG", false)
 	defaultBackendURL := getEnvOrDefault("BACKEND_URL", "")
 	defaultBackendAPIKey := getEnvOrDefault("BACKEND_API_KEY", "")
-	defaultBatchSize := getEnvIntOrDefault("BATCH_SIZE", 300)
+	defaultBatchSize := getEnvIntOrDefault("BATCH_SIZE", 4)
 	defaultTrendsAPIURL := getEnvOrDefault("TRENDS_API_URL", "")
 	defaultEncryptionKey := getEnvOrDefault("ENCRYPTION_KEY", "")
 	
@@ -294,7 +294,7 @@ func printUsage() {
 	fmt.Println("    -workers int           Sitemap workers (default: 15, env: SITEMAP_WORKERS)")
 	fmt.Println("    -debug                 Enable debug logging (env: DEBUG)")
 	fmt.Println("    -backend-api-key string Backend API key (env: BACKEND_API_KEY)")
-	fmt.Println("    -batch-size int        Batch size 200-400 (default: 300, env: BATCH_SIZE)")
+	fmt.Println("    -batch-size int        Keywords per batch (default: 4, env: BATCH_SIZE)")
 	fmt.Println("")
 	fmt.Println("ADVANCED OPTIONS:")
 	fmt.Println("    -api-workers int       API query workers (default: 2, env: API_WORKERS)")

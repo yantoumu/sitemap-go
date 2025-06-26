@@ -21,7 +21,7 @@ type MonitorConfigBuilder struct {
 // NewMonitorConfigBuilder creates a new configuration builder
 func NewMonitorConfigBuilder() *MonitorConfigBuilder {
 	return &MonitorConfigBuilder{
-		batchSize: 300, // Default batch size
+		batchSize: 4,   // Default batch size: 4 keywords per request
 		workers:   8,   // Default worker count
 		errors:    make([]error, 0),
 	}

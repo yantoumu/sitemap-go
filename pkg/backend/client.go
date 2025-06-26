@@ -20,7 +20,7 @@ type httpBackendClient struct {
 // NewBackendClient creates a new backend API client
 func NewBackendClient(config BackendConfig) (BackendClient, error) {
 	if config.BatchSize == 0 {
-		config.BatchSize = 300 // Default batch size
+		config.BatchSize = 4 // Default batch size: 4 keywords per request
 	}
 	if config.Timeout == 0 {
 		config.Timeout = 60 * time.Second // Default timeout

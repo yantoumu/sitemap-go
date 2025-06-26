@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-func TestSequentialExecutor_IntervalControl(t *testing.T) {
-	executor := NewSequentialExecutor(1 * time.Second)
+func TestSequentialExecutor_SequentialExecution(t *testing.T) {
+	executor := NewSequentialExecutor()
 	
 	start := time.Now()
 	var executionTimes []time.Time
@@ -17,6 +17,8 @@ func TestSequentialExecutor_IntervalControl(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		err := executor.Execute(context.Background(), func() error {
 			executionTimes = append(executionTimes, time.Now())
+			// Simulate work time
+			time.Sleep(50 * time.Millisecond)
 			return nil
 		})
 		
@@ -25,36 +27,28 @@ func TestSequentialExecutor_IntervalControl(t *testing.T) {
 		}
 	}
 	
-	// Verify timing intervals
+	// Verify executions completed
 	if len(executionTimes) != 3 {
 		t.Errorf("Expected 3 executions, got %d", len(executionTimes))
 	}
 	
-	// First execution should be immediate
-	firstDelay := executionTimes[0].Sub(start)
-	if firstDelay > 100*time.Millisecond {
-		t.Errorf("First execution delayed too much: %v", firstDelay)
+	// All executions should complete quickly without forced delays
+	totalTime := time.Since(start)
+	expectedTime := 150 * time.Millisecond // 3 * 50ms work time
+	if totalTime > expectedTime+100*time.Millisecond {
+		t.Errorf("Execution took too long: %v (expected ~%v)", totalTime, expectedTime)
 	}
 	
-	// Second execution should be ~1 second after first
-	if len(executionTimes) >= 2 {
-		interval1 := executionTimes[1].Sub(executionTimes[0])
-		if interval1 < 900*time.Millisecond || interval1 > 1100*time.Millisecond {
-			t.Errorf("Second execution interval out of range: %v (expected ~1s)", interval1)
-		}
-	}
-	
-	// Third execution should be ~1 second after second
-	if len(executionTimes) >= 3 {
-		interval2 := executionTimes[2].Sub(executionTimes[1])
-		if interval2 < 900*time.Millisecond || interval2 > 1100*time.Millisecond {
-			t.Errorf("Third execution interval out of range: %v (expected ~1s)", interval2)
+	// Verify sequential order (execution times should be strictly increasing)
+	for i := 1; i < len(executionTimes); i++ {
+		if executionTimes[i].Before(executionTimes[i-1]) {
+			t.Errorf("Execution %d started before execution %d completed", i, i-1)
 		}
 	}
 }
 
 func TestSequentialExecutor_ErrorHandling(t *testing.T) {
-	executor := NewSequentialExecutor(100 * time.Millisecond)
+	executor := NewSequentialExecutor()
 	
 	testError := errors.New("test error")
 	
@@ -68,12 +62,7 @@ func TestSequentialExecutor_ErrorHandling(t *testing.T) {
 }
 
 func TestSequentialExecutor_ContextCancellation(t *testing.T) {
-	executor := NewSequentialExecutor(2 * time.Second)
-	
-	// First execution to set lastRequest time
-	executor.Execute(context.Background(), func() error {
-		return nil
-	})
+	executor := NewSequentialExecutor()
 	
 	// Create context that will be cancelled
 	ctx, cancel := context.WithCancel(context.Background())
@@ -91,7 +80,7 @@ func TestSequentialExecutor_ContextCancellation(t *testing.T) {
 }
 
 func TestSequentialExecutor_ConcurrentAccess(t *testing.T) {
-	executor := NewSequentialExecutor(500 * time.Millisecond)
+	executor := NewSequentialExecutor()
 	
 	const numGoroutines = 5
 	results := make(chan time.Time, numGoroutines)
@@ -119,6 +108,6 @@ func TestSequentialExecutor_ConcurrentAccess(t *testing.T) {
 	}
 	
 	// Note: Due to concurrent access, execution order may vary,
-	// but the sequential executor should still maintain minimum intervals
+	// but the sequential executor should ensure no overlapping executions
 	t.Logf("Execution times: %v", execTimes)
 }

@@ -56,7 +56,7 @@ type BackendResponse struct {
 type BackendConfig struct {
 	BaseURL    string `json:"base_url"`
 	APIKey     string `json:"api_key"`
-	BatchSize  int    `json:"batch_size"`   // 200-400 keywords per batch
+	BatchSize  int    `json:"batch_size"`   // Keywords per batch (default: 4)
 	EnableGzip bool   `json:"enable_gzip"`
 	Timeout    time.Duration `json:"timeout"`
 }
