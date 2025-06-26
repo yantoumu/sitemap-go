@@ -66,7 +66,7 @@ func (h *HTTPClient) Download(ctx context.Context, targetURL string) (io.ReadClo
 	h.setRequestHeaders(req, targetURL)
 
 	// Execute request with timeout
-	err := h.client.DoTimeout(req, resp, 30*time.Second)
+	err = h.client.DoTimeout(req, resp, 30*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
