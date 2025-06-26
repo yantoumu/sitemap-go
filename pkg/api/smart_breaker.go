@@ -114,8 +114,8 @@ func (scb *SmartCircuitBreaker) Execute(fn func() error) error {
 
 // shouldReject determines if the request should be rejected
 func (scb *SmartCircuitBreaker) shouldReject() bool {
-	scb.mu.RLock()
-	defer scb.mu.RUnlock()
+	scb.mu.Lock()
+	defer scb.mu.Unlock()
 
 	switch scb.state {
 	case StateClosed:
@@ -123,17 +123,11 @@ func (scb *SmartCircuitBreaker) shouldReject() bool {
 	case StateOpen:
 		// Check if recovery timeout has passed
 		if time.Now().After(scb.nextRetry) {
-			scb.mu.RUnlock()
-			scb.mu.Lock()
-			// Double-check after acquiring write lock
-			if scb.state == StateOpen && time.Now().After(scb.nextRetry) {
-				scb.state = StateHalfOpen
-				scb.halfOpenCount = 0
-				scb.log.Info("Circuit breaker transitioning to half-open state")
-			}
-			scb.mu.Unlock()
-			scb.mu.RLock()
-			return scb.state == StateOpen
+			// Safe state transition - already have write lock
+			scb.state = StateHalfOpen
+			scb.halfOpenCount = 0
+			scb.log.Info("Circuit breaker transitioning to half-open state")
+			return false
 		}
 		return true
 	case StateHalfOpen:

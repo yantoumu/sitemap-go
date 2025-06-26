@@ -13,6 +13,7 @@ import (
 
 type httpBackendClient struct {
 	config BackendConfig
+	client *fasthttp.Client
 	log    *logger.Logger
 }
 
@@ -28,8 +29,17 @@ func NewBackendClient(config BackendConfig) (BackendClient, error) {
 		return nil, fmt.Errorf("backend API key is required - set BACKEND_API_KEY environment variable")
 	}
 
+	// Create reusable client with optimized settings
+	client := &fasthttp.Client{
+		ReadTimeout:         config.Timeout,
+		WriteTimeout:        config.Timeout,
+		MaxConnsPerHost:     100,
+		MaxIdleConnDuration: 90 * time.Second,
+	}
+
 	return &httpBackendClient{
 		config: config,
+		client: client,
 		log:    logger.GetLogger().WithField("component", "backend_client"),
 	}, nil
 }
@@ -100,13 +110,8 @@ func (c *httpBackendClient) SubmitBatch(batch KeywordMetricsBatch) (*BackendResp
 		"request_size":     len(requestBody),
 	}).Debug("Sending request to backend API")
 
-	// Execute request with timeout
-	client := &fasthttp.Client{
-		ReadTimeout:  c.config.Timeout,
-		WriteTimeout: c.config.Timeout,
-	}
-
-	err = client.DoTimeout(req, resp, c.config.Timeout)
+	// Execute request with timeout using reusable client
+	err = c.client.DoTimeout(req, resp, c.config.Timeout)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

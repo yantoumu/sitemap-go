@@ -153,10 +153,13 @@ func (p *ConcurrentPool) Start() error {
 func (p *ConcurrentPool) Stop() error {
 	p.log.Info("Stopping worker pool...")
 	
-	// Close task queue to signal workers to stop
+	// Step 1: Cancel context to signal workers to stop
+	p.cancel()
+	
+	// Step 2: Close task queue
 	close(p.taskQueue)
 	
-	// Wait for all workers to finish with timeout
+	// Step 3: Wait for all workers to finish with timeout
 	done := make(chan struct{})
 	go func() {
 		p.wg.Wait()
@@ -167,14 +170,13 @@ func (p *ConcurrentPool) Stop() error {
 	case <-done:
 		p.log.Info("All workers stopped gracefully")
 	case <-time.After(30 * time.Second):
-		p.log.Warn("Timeout waiting for workers to stop, forcing shutdown")
-		p.cancel()
+		p.log.Warn("Timeout waiting for workers to stop")
 		<-done
 	}
 	
-	// Close result queue
+	// Step 4: Close result queue after workers are done
 	close(p.resultQueue)
-	
+	p.log.Info("Worker pool stopped")
 	return nil
 }
 
@@ -308,10 +310,13 @@ func (p *ConcurrentPool) processTask(workerID int, task Task) {
 		Timestamp: time.Now(),
 	}
 	
-	// Send result (non-blocking)
+	// Send result (non-blocking with context check)
 	select {
 	case p.resultQueue <- result:
 		// Result sent successfully
+	case <-p.ctx.Done():
+		// Pool shutting down, safely drop result
+		p.log.WithField("task_id", taskID).Debug("Result dropped - pool shutting down")
 	default:
 		// Result queue is full, log and continue
 		p.log.WithField("task_id", taskID).Warn("Result queue full, dropping result")
