@@ -55,11 +55,11 @@ func NewURLKeywordExtractor() *URLKeywordExtractor {
 }
 
 func (e *URLKeywordExtractor) Extract(urlStr string) ([]string, error) {
-	e.log.WithField("url", urlStr).Debug("Extracting keywords from URL")
+	e.log.Debug("Extracting keywords from URL")
 	
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
-		e.log.WithError(err).WithField("url", urlStr).Error("Failed to parse URL")
+		e.log.WithError(err).Error("Failed to parse URL")
 		return nil, err
 	}
 

@@ -58,23 +58,27 @@ func (p *XMLParser) SetConcurrentLimit(limit int) {
 }
 
 func (p *XMLParser) Parse(ctx context.Context, sitemapURL string) ([]URL, error) {
-	p.log.WithField("url", sitemapURL).Debug("Starting sitemap parse")
+	p.log.Debug("Starting sitemap parse")
 	
 	// Download sitemap content
 	content, err := p.downloadSitemap(ctx, sitemapURL)
 	if err != nil {
-		p.log.WithError(err).WithField("url", sitemapURL).Error("Failed to download sitemap")
+		p.log.WithError(err).Error("Failed to download sitemap")
 		return nil, fmt.Errorf("failed to download sitemap: %w", err)
 	}
 	defer content.Close()
 
-	// Parse XML
-	decoder := xml.NewDecoder(content)
+	// Read all content into memory first
+	data, err := io.ReadAll(content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read sitemap content: %w", err)
+	}
+
 	var urls []URL
 
 	// Try parsing as sitemap index first
 	var sitemapIndex xmlSitemapIndex
-	if err := decoder.Decode(&sitemapIndex); err == nil && len(sitemapIndex.Sitemaps) > 0 {
+	if err := xml.Unmarshal(data, &sitemapIndex); err == nil && len(sitemapIndex.Sitemaps) > 0 {
 		p.log.WithField("count", len(sitemapIndex.Sitemaps)).Info("Processing sitemap index")
 		
 		// Process sitemaps concurrently
@@ -82,17 +86,9 @@ func (p *XMLParser) Parse(ctx context.Context, sitemapURL string) ([]URL, error)
 		return urls, nil
 	}
 
-	// Reset decoder and try parsing as regular sitemap
-	content.Close()
-	content, err = p.downloadSitemap(ctx, sitemapURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to re-download sitemap: %w", err)
-	}
-	defer content.Close()
-
-	decoder = xml.NewDecoder(content)
+	// Try parsing as regular sitemap (using same data)
 	var sitemap xmlSitemap
-	if err := decoder.Decode(&sitemap); err != nil {
+	if err := xml.Unmarshal(data, &sitemap); err != nil {
 		return nil, fmt.Errorf("failed to parse XML: %w", err)
 	}
 
@@ -128,10 +124,7 @@ func (p *XMLParser) Parse(ctx context.Context, sitemapURL string) ([]URL, error)
 		urls = append(urls, url)
 	}
 
-	// Only log for large sitemaps to reduce log noise
-	if len(urls) > 100 {
-		p.log.WithField("count", len(urls)).Info("Successfully parsed large sitemap")
-	}
+	// Removed verbose success logging to reduce log noise
 	return urls, nil
 }
 
@@ -204,7 +197,7 @@ func (p *XMLParser) processSitemapsIndexConcurrently(ctx context.Context, sitema
 			default:
 			}
 
-			p.log.WithField("url", sitemapLoc).Debug("Processing sub-sitemap")
+			p.log.Debug("Processing sub-sitemap")
 			
 			subURLs, err := p.Parse(ctx, sitemapLoc)
 			
@@ -216,12 +209,7 @@ func (p *XMLParser) processSitemapsIndexConcurrently(ctx context.Context, sitema
 			}
 			
 			if err != nil {
-				p.log.WithError(err).WithField("url", sitemapLoc).Warn("Failed to parse sub-sitemap")
-			} else {
-				p.log.WithFields(map[string]interface{}{
-					"url":   sitemapLoc,
-					"count": len(subURLs),
-				}).Debug("Sub-sitemap processed successfully")
+				p.log.WithError(err).Warn("Failed to parse sub-sitemap")
 			}
 		}(sitemap.Loc)
 	}
@@ -253,7 +241,7 @@ func (p *XMLParser) processSitemapsIndexConcurrently(ctx context.Context, sitema
 		}
 	}
 
-	p.log.WithField("total_urls", len(allURLs)).Info("Completed processing sitemap index")
+	// Removed verbose success logging to reduce log noise
 	return allURLs
 }
 

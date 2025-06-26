@@ -41,12 +41,12 @@ func (p *EnhancedTXTParser) SetHTTPClient(client DownloadClient) {
 
 // Parse implements the SitemapParser interface with enhanced flexibility
 func (p *EnhancedTXTParser) Parse(ctx context.Context, txtURL string) ([]URL, error) {
-	p.log.WithField("url", txtURL).Debug("Starting enhanced TXT sitemap parse")
+	p.log.Debug("Starting enhanced TXT sitemap parse")
 	
 	// Download content
 	content, err := p.httpClient.Download(ctx, txtURL)
 	if err != nil {
-		p.log.WithError(err).WithField("url", txtURL).Error("Failed to download TXT sitemap")
+		p.log.WithError(err).Error("Failed to download TXT sitemap")
 		return nil, fmt.Errorf("failed to download TXT sitemap: %w", err)
 	}
 	defer content.Close()
@@ -122,11 +122,7 @@ func (p *EnhancedTXTParser) parseContent(rawBytes []byte) ([]URL, error) {
 		p.log.WithError(err).Warn("Scanner error (partial results may be available)")
 	}
 	
-	p.log.WithFields(map[string]interface{}{
-		"lines_read":  lineCount,
-		"valid_urls":  validURLCount,
-		"total_found": len(urls),
-	}).Info("Successfully parsed TXT sitemap")
+	// Removed verbose success logging to reduce log noise
 	
 	return urls, nil
 }

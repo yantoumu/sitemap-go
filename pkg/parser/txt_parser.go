@@ -40,12 +40,12 @@ func (p *TXTParser) SetLimits(maxLines, maxLineLength int) {
 }
 
 func (p *TXTParser) Parse(ctx context.Context, txtURL string) ([]URL, error) {
-	p.log.WithField("url", txtURL).Debug("Starting TXT sitemap parse")
+	p.log.Debug("Starting TXT sitemap parse")
 	
 	// Download TXT content
 	content, err := p.downloadTXT(ctx, txtURL)
 	if err != nil {
-		p.log.WithError(err).WithField("url", txtURL).Error("Failed to download TXT sitemap")
+		p.log.WithError(err).Error("Failed to download TXT sitemap")
 		return nil, fmt.Errorf("failed to download TXT sitemap: %w", err)
 	}
 	defer content.Close()
@@ -84,7 +84,7 @@ func (p *TXTParser) Parse(ctx context.Context, txtURL string) ([]URL, error) {
 		// Validate and process URL
 		urlStruct, err := p.processURL(line)
 		if err != nil {
-			p.log.WithError(err).WithField("url", line).Debug("Failed to process URL")
+			// Skip invalid URLs silently to avoid log spam
 			continue
 		}
 
@@ -94,17 +94,11 @@ func (p *TXTParser) Parse(ctx context.Context, txtURL string) ([]URL, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		p.log.WithError(err).WithField("url", txtURL).Error("Error reading TXT sitemap")
+		p.log.WithError(err).Error("Error reading TXT sitemap")
 		return nil, fmt.Errorf("error reading TXT sitemap: %w", err)
 	}
 
-	// Only log for large sitemaps to reduce log noise
-	if len(urls) > 100 {
-		p.log.WithFields(map[string]interface{}{
-			"count":      len(urls),
-			"lines_read": lineCount,
-		}).Info("Successfully parsed large TXT sitemap")
-	}
+	// Removed verbose success logging to reduce log noise
 	
 	return urls, nil
 }

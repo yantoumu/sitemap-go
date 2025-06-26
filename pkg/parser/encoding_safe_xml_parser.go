@@ -50,12 +50,12 @@ func (p *EncodingSafeXMLParser) SetHTTPClient(client DownloadClient) {
 
 // Parse implements intelligent XML parsing with encoding detection and error recovery
 func (p *EncodingSafeXMLParser) Parse(ctx context.Context, sitemapURL string) ([]URL, error) {
-	p.log.WithField("url", sitemapURL).Debug("Starting encoding-safe sitemap parse")
+	p.log.Debug("Starting encoding-safe sitemap parse")
 	
 	// Download sitemap content
 	content, err := p.httpClient.Download(ctx, sitemapURL)
 	if err != nil {
-		p.log.WithError(err).WithField("url", sitemapURL).Error("Failed to download sitemap")
+		p.log.WithError(err).Error("Failed to download sitemap")
 		return nil, fmt.Errorf("failed to download sitemap: %w", err)
 	}
 	defer content.Close()
@@ -400,13 +400,13 @@ func (p *EncodingSafeXMLParser) parseXMLContent(content []byte) ([]URL, error) {
 		// Parse URL to apply filters
 		parsedURL, err := url.Parse(xmlURL.Loc)
 		if err != nil {
-			p.log.WithError(err).WithField("url", xmlURL.Loc).Debug("Failed to parse URL")
+			// Skip invalid URLs silently to avoid log spam
 			continue
 		}
 		
 		// Apply filters
 		if p.shouldExclude(parsedURL) {
-			p.log.WithField("url", xmlURL.Loc).Debug("URL excluded by filter")
+			// Skip excluded URLs silently to avoid log spam
 			continue
 		}
 		

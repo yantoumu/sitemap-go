@@ -55,12 +55,12 @@ func (p *RSSParser) SetConcurrentLimit(limit int) {
 }
 
 func (p *RSSParser) Parse(ctx context.Context, rssURL string) ([]URL, error) {
-	p.log.WithField("url", rssURL).Debug("Starting RSS parse")
+	p.log.Debug("Starting RSS parse")
 	
 	// Download RSS content
 	content, err := p.downloadRSS(ctx, rssURL)
 	if err != nil {
-		p.log.WithError(err).WithField("url", rssURL).Error("Failed to download RSS")
+		p.log.WithError(err).Error("Failed to download RSS")
 		return nil, fmt.Errorf("failed to download RSS: %w", err)
 	}
 	defer content.Close()
@@ -69,7 +69,7 @@ func (p *RSSParser) Parse(ctx context.Context, rssURL string) ([]URL, error) {
 	decoder := xml.NewDecoder(content)
 	var feed rssFeed
 	if err := decoder.Decode(&feed); err != nil {
-		p.log.WithError(err).WithField("url", rssURL).Error("Failed to parse RSS XML")
+		p.log.WithError(err).Error("Failed to parse RSS XML")
 		return nil, fmt.Errorf("failed to parse RSS XML: %w", err)
 	}
 
@@ -83,13 +83,13 @@ func (p *RSSParser) Parse(ctx context.Context, rssURL string) ([]URL, error) {
 		// Parse URL to apply filters
 		parsedURL, err := url.Parse(item.Link)
 		if err != nil {
-			p.log.WithError(err).WithField("url", item.Link).Debug("Failed to parse URL")
+			// Skip invalid URLs silently to avoid log spam
 			continue
 		}
 
 		// Apply filters
 		if p.shouldExclude(parsedURL) {
-			p.log.WithField("url", item.Link).Debug("URL excluded by filter")
+			// Skip excluded URLs silently to avoid log spam
 			continue
 		}
 
@@ -108,10 +108,7 @@ func (p *RSSParser) Parse(ctx context.Context, rssURL string) ([]URL, error) {
 		urls = append(urls, urlStruct)
 	}
 
-	// Only log for large RSS feeds to reduce log noise
-	if len(urls) > 100 {
-		p.log.WithField("count", len(urls)).Info("Successfully parsed large RSS feed")
-	}
+	// Removed verbose success logging to reduce log noise
 	return urls, nil
 }
 

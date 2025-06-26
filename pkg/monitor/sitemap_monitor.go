@@ -283,14 +283,14 @@ func (sm *SitemapMonitor) ProcessSitemaps(ctx context.Context, sitemapURLs []str
 	// Note: Submission pool will be stopped in Close() method
 	
 	// Step 1: Extract all keywords from all sitemaps first
-	sm.log.Info("Step 1: Extracting keywords from all sitemaps")
+	// Step 1: Extract keywords from all sitemaps
 	allKeywords, keywordToSpecificURLMap, sitemapResults, err := sm.extractAllKeywords(ctx, sitemapURLs, workers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract keywords: %w", err)
 	}
 	
 	// Step 2: Global keyword deduplication
-	sm.log.WithField("total_keywords_before_dedup", len(allKeywords)).Info("Step 2: Global keyword deduplication")
+	sm.log.WithField("total_keywords_before_dedup", len(allKeywords)).Info("Step 2: Starting global keyword deduplication")
 	uniqueKeywords := sm.deduplicateKeywords(allKeywords)
 	sm.log.WithFields(map[string]interface{}{
 		"keywords_before_dedup": len(allKeywords),
@@ -298,17 +298,19 @@ func (sm *SitemapMonitor) ProcessSitemaps(ctx context.Context, sitemapURLs []str
 		"deduplication_ratio":   fmt.Sprintf("%.1f%%", float64(len(uniqueKeywords))/float64(len(allKeywords))*100),
 	}).Info("Global deduplication completed")
 	
-	// Step 3: Query Google Trends API for unique keywords
+	// Step 3: Query SEOKey API for unique keywords
 	if len(uniqueKeywords) > 0 {
-		sm.log.WithField("unique_keywords", len(uniqueKeywords)).Info("Step 3: Querying Google Trends for unique keywords")
+		sm.log.WithField("unique_keywords", len(uniqueKeywords)).Info("Step 3: Starting SEOKey API queries")
 		err = sm.queryAndSubmitKeywords(ctx, uniqueKeywords, keywordToSpecificURLMap)
 		if err != nil {
 			sm.secureLog.SafeError("Failed to query and submit keywords", err, nil)
 		}
+	} else {
+		sm.log.Warn("No unique keywords found to query")
 	}
 	
 	// Step 4: Update sitemap results and save URL hashes
-	sm.log.Info("Step 4: Saving URL hashes for processed sitemaps")
+	// Step 4: Save URL hashes for processed sitemaps
 	sm.saveProcessedSitemaps(ctx, sitemapResults)
 	
 	// Count success/failure for summary
@@ -324,7 +326,7 @@ func (sm *SitemapMonitor) ProcessSitemaps(ctx context.Context, sitemapURLs []str
 		"success_count":         successCount,
 		"failure_count":         len(sitemapResults) - successCount,
 		"unique_keywords_queried": len(uniqueKeywords),
-	}).Info("Batch processing completed with global deduplication")
+	}).Debug("Batch processing completed")
 	
 	return sitemapResults, nil
 }
@@ -483,7 +485,7 @@ func (sm *SitemapMonitor) SubmitToBackend(ctx context.Context, results []*Monito
 		return nil
 	}
 	
-	sm.log.WithField("result_count", len(results)).Info("Submitting results to backend")
+	// Submit results to backend
 	
 	// Create backend API client
 	backendClient := api.NewHTTPAPIClient(backendConfig.BaseURL, backendConfig.APIKey)
@@ -514,7 +516,7 @@ func (sm *SitemapMonitor) SubmitToBackend(ctx context.Context, results []*Monito
 		return fmt.Errorf("backend submission failed: %w", err)
 	}
 	
-	sm.log.Info("Results submitted to backend successfully")
+	// Backend submission successful
 	return nil
 }
 
@@ -681,7 +683,10 @@ func (sm *SitemapMonitor) ExtractAllKeywords(ctx context.Context, sitemapURLs []
 func (sm *SitemapMonitor) extractAllKeywords(ctx context.Context, sitemapURLs []string, workers int) ([]string, map[string]string, []*MonitorResult, error) {
 	// Use adaptive concurrency settings instead of fixed workers count
 	config := sm.concurrencyManager.GetCurrentConfig()
-	actualWorkers := min(config.MainWorkers, len(sitemapURLs)) // Don't exceed sitemap count
+	actualWorkers := config.MainWorkers
+	if len(sitemapURLs) < actualWorkers {
+		actualWorkers = len(sitemapURLs) // Don't exceed sitemap count
+	}
 	type extractResult struct {
 		sitemapURL string
 		keywords   []string
@@ -811,7 +816,7 @@ func (sm *SitemapMonitor) formatKeywordForAPI(keyword string) string {
 
 // extractKeywordsFromSitemap extracts keywords from a single sitemap
 func (sm *SitemapMonitor) extractKeywordsFromSitemap(ctx context.Context, sitemapURL string) ([]string, []string, error) {
-	sm.secureLog.DebugWithURL("Extracting keywords from sitemap", sitemapURL, nil)
+	sm.secureLog.InfoWithURL("Starting keyword extraction from sitemap", sitemapURL, nil)
 	
 	// Parse sitemap
 	format := sm.determineFormat(sitemapURL)
@@ -825,14 +830,21 @@ func (sm *SitemapMonitor) extractKeywordsFromSitemap(ctx context.Context, sitema
 		return nil, nil, fmt.Errorf("failed to parse sitemap: %w", err)
 	}
 	
-	sm.log.WithField("url_count", len(urls)).Debug("Sitemap parsed, extracting keywords")
+	sm.log.WithField("url_count", len(urls)).Info("Sitemap parsed, extracting keywords")
 	
 	// Extract keywords from URLs
 	var keywords []string
 	var urlList []string
 	var failedCount int
 	
-	for _, url := range urls {
+	sm.log.WithField("total_urls", len(urls)).Info("Starting URL keyword extraction")
+	
+	for i, url := range urls {
+		// Log progress every 100 URLs
+		if i > 0 && i%100 == 0 {
+			sm.log.WithField("progress", fmt.Sprintf("%d/%d", i, len(urls))).Info("Keyword extraction progress")
+		}
+		
 		urlKeywords, err := sm.keywordExtractor.Extract(url.Address)
 		if err != nil {
 			failedCount++
@@ -881,13 +893,13 @@ func (sm *SitemapMonitor) deduplicateKeywords(keywords []string) []string {
 // queryAndSubmitKeywords queries Google Trends in batches and submits results to backend
 // Uses simple batch processing with 4 keywords per batch
 func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords []string, keywordToSpecificURLMap map[string]string) error {
-	sm.log.WithField("keyword_count", len(keywords)).Info("Querying Google Trends API for deduplicated keywords")
+	// Removed verbose logging - keywords are already deduplicated at this point
 	
 	// Simple batch processing - no goroutines, no deadlock risk
 	const batchSize = 4
 	var allTrendData []api.Keyword
 	
-	// Process keywords in batches of 4
+	// Process keywords in batches of 4 for SEOKey API
 	for i := 0; i < len(keywords); i += batchSize {
 		// Check context cancellation
 		select {
@@ -904,7 +916,7 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 		batch := keywords[i:end]
 		sm.log.WithField("batch_size", len(batch)).Debug("Processing keyword batch")
 		
-		// Query Google Trends API for this batch with sequential execution
+		// Query SEOKey API for batch with sequential execution
 		var trendData *api.APIResponse
 		err := sm.apiExecutor.Execute(ctx, func() error {
 			var queryErr error
@@ -912,11 +924,11 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 			return queryErr
 		})
 		if err != nil {
-			sm.secureLog.SafeError("Google Trends API batch query failed", err, map[string]interface{}{
+			sm.secureLog.SafeError("SEOKey API batch query failed", err, map[string]interface{}{
 				"batch_size": len(batch),
 			})
 			
-			// Save this batch as failed and continue with next batch
+			// Save failed batch
 			var failedKeywords []string
 			for _, keyword := range batch {
 				if keywordToSpecificURLMap[keyword] != "" {
@@ -942,7 +954,7 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 		return fmt.Errorf("no successful trend data retrieved from any batch")
 	}
 	
-	sm.log.WithField("successful_keywords", len(allTrendData)).Info("Google Trends batch queries successful")
+	// SEOKey API queries completed
 	
 	// Convert to backend format and submit
 	var allBackendData []backend.KeywordMetricsData
@@ -963,13 +975,13 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 	
 	// Submit to backend (non-blocking)
 	if len(allBackendData) > 0 {
-		sm.log.WithField("backend_data_count", len(allBackendData)).Info("Submitting deduplicated results to backend")
+		// Submit deduplicated results to backend
 		
 		success := sm.submissionPool.Submit(allBackendData, func(err error) {
 			if err != nil {
 				sm.secureLog.SafeError("Backend submission failed for deduplicated data", err, nil)
 			} else {
-				sm.log.WithField("data_count", len(allBackendData)).Info("Backend submission successful for deduplicated data")
+				// Backend submission successful
 			}
 		})
 		
