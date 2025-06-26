@@ -7,6 +7,20 @@
 sitemap-go
 sitemap-monitor
 
+# Compiled test binaries and scripts
+analyze-test-results
+clarify_api_usage
+debug-problem-sites
+demo_*
+final-comprehensive-test
+import_cleaner
+main
+quick-test-*
+test-*
+test_*
+!*.go
+!*.sh
+
 # Test binary, built with `go test -c`
 *.test
 
