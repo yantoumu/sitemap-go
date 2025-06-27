@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -66,15 +67,15 @@ func (c *httpAPIClient) Query(ctx context.Context, keywords []string) (*APIRespo
 		atomic.AddUint64(&c.totalLatency, uint64(time.Since(start).Milliseconds()))
 	}()
 	
-	c.log.WithField("keywords_count", len(keywords)).Debug("Starting API query")
-	
+	// Removed detailed debug logging for cleaner output
+
 	var result *APIResponse
-	
+
 	// Use simple retry mechanism
 	err := c.retry.Execute(ctx, func() error {
 		return c.doQuery(ctx, keywords, &result)
 	})
-	
+
 	if err != nil {
 		atomic.AddUint64(&c.failedRequests, 1)
 		c.lastError.Store(err.Error())
@@ -82,7 +83,7 @@ func (c *httpAPIClient) Query(ctx context.Context, keywords []string) (*APIRespo
 		return nil, err
 	}
 	
-	c.log.WithField("duration_ms", time.Since(start).Milliseconds()).Debug("API query completed successfully")
+	// Removed success logging for cleaner output
 	return result, nil
 }
 
@@ -130,14 +131,24 @@ func (c *httpAPIClient) doQuery(ctx context.Context, keywords []string, result *
 	}
 	
 	// Execute request using connection manager
-	err := c.connManager.GetFastHTTPClient().DoTimeout(req, resp, 30*time.Second)
+	err := c.connManager.GetFastHTTPClient().DoTimeout(req, resp, 80*time.Second)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
 	
-	// Check status code
+	// Check status code with environment-aware error handling
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return fmt.Errorf("API returned status %d: %s", resp.StatusCode(), string(resp.Body()))
+		// In development, provide more detailed error information
+		if os.Getenv("DEBUG") == "true" || os.Getenv("ENVIRONMENT") == "development" {
+			// Safely truncate response body for debugging (max 200 chars)
+			respBody := string(resp.Body())
+			if len(respBody) > 200 {
+				respBody = respBody[:200] + "..."
+			}
+			return fmt.Errorf("API returned status %d: %s", resp.StatusCode(), respBody)
+		}
+		// In production, hide response body for security
+		return fmt.Errorf("API returned status %d (response body hidden for security)", resp.StatusCode())
 	}
 	
 	// Parse seokey API response format

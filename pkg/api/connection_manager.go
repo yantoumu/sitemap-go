@@ -47,7 +47,7 @@ func HighThroughputConnectionConfig() ConnectionConfig {
 		DialTimeout:           5 * time.Second,
 		KeepAlive:             60 * time.Second,
 		TLSHandshakeTimeout:   5 * time.Second,
-		RequestTimeout:        15 * time.Second,
+		RequestTimeout:        80 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Second,
 	}
 }

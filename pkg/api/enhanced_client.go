@@ -60,7 +60,7 @@ func (c *EnhancedHTTPAPIClient) Query(ctx context.Context, keywords []string) (*
 		atomic.AddUint64(&c.totalLatency, uint64(time.Since(start).Milliseconds()))
 	}()
 
-	c.log.WithField("keywords_count", len(keywords)).Debug("Starting enhanced API query")
+	// Removed detailed debug logging for cleaner output
 
 	var result *APIResponse
 	var lastURL string
@@ -73,7 +73,7 @@ func (c *EnhancedHTTPAPIClient) Query(ctx context.Context, keywords []string) (*
 	if err != nil {
 		atomic.AddUint64(&c.failedRequests, 1)
 		c.lastError.Store(err.Error())
-		
+
 		// Record failure for health tracking
 		if lastURL != "" {
 			c.urlPool.RecordFailure(lastURL)
@@ -88,7 +88,7 @@ func (c *EnhancedHTTPAPIClient) Query(ctx context.Context, keywords []string) (*
 		c.urlPool.RecordSuccess(lastURL)
 	}
 
-	c.log.WithField("duration_ms", time.Since(start).Milliseconds()).Debug("Enhanced API query completed successfully")
+	// Removed success logging for cleaner output
 	return result, nil
 }
 
@@ -144,7 +144,7 @@ func (c *EnhancedHTTPAPIClient) doQueryWithHealthTracking(ctx context.Context, k
 	}
 
 	// Execute request
-	err := c.connManager.GetFastHTTPClient().DoTimeout(req, resp, 30*time.Second)
+	err := c.connManager.GetFastHTTPClient().DoTimeout(req, resp, 80*time.Second)
 	if err != nil {
 		return fmt.Errorf("request failed for URL %s: %w", c.maskURL(baseURL), err)
 	}

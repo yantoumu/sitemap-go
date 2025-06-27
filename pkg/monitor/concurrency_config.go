@@ -44,9 +44,9 @@ func DefaultConcurrencyConfig() ConcurrencyConfig {
 		ParseWorkers:      10,  // 🚀 10个XML解析worker (CPU密集，充分利用多核)  
 		ExtractWorkers:    8,   // 🚀 8个关键词提取worker (轻量级，快速处理)
 		
-		// API查询层：严格控制，避免限流
-		APIWorkers:        2,   // 🎯 仅2个API查询worker (Google Trends有严格限制)
-		APIRequestsPerSecond: 1.0, // 🎯 每秒1个API请求 (防止429限流)
+		// API查询层：优化为双SEOKey API配置
+		APIWorkers:        4,   // 🎯 4个API查询worker (双API均衡负载)
+		APIRequestsPerSecond: 2.5, // 🎯 每个API每秒2.5个请求 (双API总计5 req/sec)
 		
 		// Sitemap抓取频率：可以更激进
 		SitemapRequestsPerSecond: 30.0, // 🚀 每秒30个sitemap请求 (普通HTTP请求)
@@ -54,7 +54,7 @@ func DefaultConcurrencyConfig() ConcurrencyConfig {
 		// 超时配置：针对不同操作优化
 		DownloadTimeout:   10 * time.Second, // Sitemap下载应该很快
 		ParseTimeout:      3 * time.Second,  // XML解析应该很快
-		APITimeout:        60 * time.Second, // API查询可能较慢，给足时间
+		APITimeout:        80 * time.Second, // API查询可能较慢，给足时间
 		
 		// 容量配置
 		MaxURLsPerSitemap: 100000, // 支持大型sitemap
@@ -162,9 +162,9 @@ func (acm *AdaptiveConcurrencyManager) adjustConcurrency() {
 		}).Warn("Reducing API concurrency due to high error rate")
 		
 	} else if acm.errorRate < 0.01 && acm.responseTime < 10*time.Second {
-		// 谨慎增加API并发
-		acm.config.APIWorkers = min(3, acm.config.APIWorkers+1) // 最多3个API worker
-		acm.config.APIRequestsPerSecond = minFloat(2.0, acm.config.APIRequestsPerSecond*1.1)
+		// 谨慎增加API并发 - 更新为双SEOKey API的限制
+		acm.config.APIWorkers = min(8, acm.config.APIWorkers+1) // 最多8个API worker (双API支持更高并发)
+		acm.config.APIRequestsPerSecond = minFloat(2.5, acm.config.APIRequestsPerSecond*1.05) // 保守增长，每个API不超过2.5 req/sec
 		
 		acm.log.WithFields(map[string]interface{}{
 			"error_rate":     acm.errorRate,
