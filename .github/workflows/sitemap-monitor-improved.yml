@@ -114,9 +114,9 @@ jobs:
           
           echo "📊 Total restored files: $(find ./data -name "*.enc" 2>/dev/null | wc -l)"
           
-          # 验证加密密钥一致性
-          if git checkout origin/${DATA_BRANCH} -- DATA_META.json 2>/dev/null; then
-            STORED_HASH=$(jq -r .encryption_key_hash DATA_META.json 2>/dev/null || echo "")
+          # 验证加密密钥一致性（简化版本）
+          if git checkout origin/${DATA_BRANCH} -- DATA_SUMMARY.txt 2>/dev/null; then
+            STORED_HASH=$(grep "Key Hash:" DATA_SUMMARY.txt | cut -d' ' -f3 2>/dev/null || echo "")
             CURRENT_HASH=$(echo -n "$ENCRYPTION_KEY" | sha256sum | cut -d' ' -f1 | head -c 8)
             if [ "$STORED_HASH" != "" ] && [ "$STORED_HASH" != "$CURRENT_HASH" ]; then
               echo "⚠️ WARNING: Encryption key mismatch detected!"
@@ -126,7 +126,7 @@ jobs:
             else
               echo "✅ Encryption key consistency verified"
             fi
-            rm -f DATA_META.json # 清理临时文件
+            rm -f DATA_SUMMARY.txt # 清理临时文件
           fi
         else
           echo "📝 No previous data branch found, starting fresh"
@@ -293,29 +293,23 @@ jobs:
         echo "  - Failed keywords: $FAILED_KEYWORDS"  
         echo "  - Sitemap files: $SITEMAP_COUNT"
         
-        # 生成数据元信息
-        cat > DATA_META.json <<EOF
-{
-  "updated_at": "$(date -u '+%Y-%m-%d %H:%M:%S UTC')",
-  "run_number": "${{ github.run_number }}",
-  "workflow_id": "${{ github.run_id }}",
-  "files": {
-    "processed_urls": "$([ -f "./data/pr/processed_urls.enc" ] && echo "present" || echo "missing")",
-    "failed_keywords": "$([ -f "./data/fa/failed_keywords.enc" ] && echo "present" || echo "missing")",
-    "sitemap_count": $SITEMAP_COUNT
-  },
-  "encryption_key_hash": "$(echo -n "$ENCRYPTION_KEY" | sha256sum | cut -d' ' -f1 | head -c 8)"
-}
-EOF
+        # 生成简单的数据摘要（符合KISS原则）
+        echo "📊 Monitoring Data Summary" > DATA_SUMMARY.txt
+        echo "Run: ${{ github.run_number }}" >> DATA_SUMMARY.txt  
+        echo "Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> DATA_SUMMARY.txt
+        echo "Processed URLs: $([ -f "./data/pr/processed_urls.enc" ] && echo "✅" || echo "❌")" >> DATA_SUMMARY.txt
+        echo "Failed Keywords: $([ -f "./data/fa/failed_keywords.enc" ] && echo "✅" || echo "❌")" >> DATA_SUMMARY.txt
+        echo "Sitemap Files: $SITEMAP_COUNT" >> DATA_SUMMARY.txt
+        echo "Key Hash: $(echo -n "$ENCRYPTION_KEY" | sha256sum | cut -d' ' -f1 | head -c 8)" >> DATA_SUMMARY.txt
 
         # 检查是否有文件变更（现在直接检查data目录）
-        if [ -n "$(git status --porcelain data/ DATA_META.json 2>/dev/null)" ]; then
+        if [ -n "$(git status --porcelain data/ DATA_SUMMARY.txt 2>/dev/null)" ]; then
           # 添加监控数据文件（直接添加data目录）
-          git add data/ DATA_META.json
+          git add data/ DATA_SUMMARY.txt
 
           # 提交更改（使用[skip ci]避免触发其他工作流）
           git commit -m "data: update monitoring - Run #${{ github.run_number }} [skip ci]
-
+          
           - Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
           - Workflow: ${{ github.workflow }}
           - Run ID: ${{ github.run_id }}"
