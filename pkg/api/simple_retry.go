@@ -53,7 +53,13 @@ func (sr *SimpleRetry) Execute(ctx context.Context, fn func() error) error {
 		
 		// Calculate delay with exponential backoff
 		delay := time.Duration(float64(sr.retryDelay) * pow(sr.backoffMultiplier, float64(attempt)))
-		
+
+		// Special handling for rate limit errors (429) and server errors (500)
+		if sr.isRateLimitError(err) || sr.isServerError(err) {
+			// Longer delay for rate limit and server errors
+			delay = delay * 3
+		}
+
 		// Wait before retry
 		select {
 		case <-ctx.Done():
@@ -87,6 +93,24 @@ func (sr *SimpleRetry) isRetryable(err error) bool {
 	
 	// Retry on network errors, timeouts, 5xx errors, rate limits
 	return true
+}
+
+// isRateLimitError checks if error is a rate limit error (429)
+func (sr *SimpleRetry) isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return contains(errStr, "429") || contains(errStr, "rate limit") || contains(errStr, "too many requests")
+}
+
+// isServerError checks if error is a server error (5xx)
+func (sr *SimpleRetry) isServerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return contains(errStr, "500") || contains(errStr, "502") || contains(errStr, "503") || contains(errStr, "504")
 }
 
 // Helper function for case-insensitive string contains

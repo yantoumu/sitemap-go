@@ -58,13 +58,13 @@ func main() {
 	defaultDebug := getEnvBoolOrDefault("DEBUG", false)
 	defaultBackendURL := getEnvOrDefault("BACKEND_URL", "")
 	defaultBackendAPIKey := getEnvOrDefault("BACKEND_API_KEY", "")
-	defaultBatchSize := getEnvIntOrDefault("BATCH_SIZE", 8)
+	defaultBatchSize := getEnvIntOrDefault("BATCH_SIZE", 5)
 	defaultTrendsAPIURL := getEnvOrDefault("TRENDS_API_URL", "")
 	defaultEncryptionKey := getEnvOrDefault("ENCRYPTION_KEY", "")
-	
+
 	// Additional environment variables for advanced configuration
 	defaultAPIWorkers := getEnvIntOrDefault("API_WORKERS", 4)
-	defaultAPIRateLimit := getEnvOrDefault("API_RATE_LIMIT", "1.0")
+	defaultAPIRateLimit := getEnvOrDefault("API_RATE_LIMIT", "2.0")
 	defaultSitemapRateLimit := getEnvOrDefault("SITEMAP_RATE_LIMIT", "30.0")
 	defaultMaxURLs := getEnvIntOrDefault("MAX_URLS_PER_SITEMAP", 100000)
 	
@@ -213,11 +213,15 @@ func main() {
 	defer cancel()
 	startTime := time.Now()
 	
-	log.Info("Starting sitemap monitoring...")
-	
+	// Create progress tracker for cleaner output
+	progressTracker := logger.NewSimpleProgressTracker()
+	progressTracker.StartOperation("sitemap_processing", len(urls), "Processing sitemaps")
+
+	log.Info("🚀 Starting sitemap monitoring...")
+
 	var results []*monitor.MonitorResult
 	var err error
-	
+
 	// Protected monitoring execution
 	func() {
 		defer func() {
@@ -228,6 +232,8 @@ func main() {
 		}()
 		results, err = sitemapMonitor.ProcessSitemaps(ctx, urls, *workers)
 	}()
+
+	progressTracker.CompleteOperation("sitemap_processing")
 	
 	if err != nil {
 		log.WithError(err).Fatal("Monitoring failed")
@@ -251,32 +257,42 @@ func main() {
 		"duration":      duration.String(),
 	}).Info("Monitoring completed")
 	
-	fmt.Printf("\n=== Sitemap Monitoring Results ===\n")
-	fmt.Printf("Total Sites: %d\n", len(results))
-	fmt.Printf("Successful: %d\n", successCount)
-	fmt.Printf("Failed: %d\n", len(results)-successCount)
-	fmt.Printf("Duration: %s\n", duration.String())
-	fmt.Printf("Success Rate: %.1f%%\n", float64(successCount)/float64(len(results))*100)
-	
-	// Show individual results
-	fmt.Printf("\n=== Individual Results ===\n")
+	// Enhanced final results display
+	fmt.Printf("\n🎯 === Sitemap Monitoring Results ===\n")
+	fmt.Printf("📊 Total Sites: %d\n", len(results))
+	fmt.Printf("✅ Successful: %d\n", successCount)
+	fmt.Printf("❌ Failed: %d\n", len(results)-successCount)
+	fmt.Printf("⏱️  Duration: %s\n", duration.String())
+	fmt.Printf("📈 Success Rate: %.1f%%\n", float64(successCount)/float64(len(results))*100)
+
+	// Count total keywords extracted
+	totalKeywords := 0
 	for _, result := range results {
-		status := "✅ SUCCESS"
-		if !result.Success {
-			status = "❌ FAILED"
-		}
-		
-		// Mask URLs in console output
-		maskedURL := secureLog.MaskSitemapURL(result.SitemapURL)
-		fmt.Printf("%s %s - Keywords: %d\n", 
-			status, maskedURL, len(result.Keywords))
-		
-		if !result.Success && result.Error != "" {
-			fmt.Printf("   Error: %s\n", result.Error)
+		if result.Success {
+			totalKeywords += len(result.Keywords)
 		}
 	}
-	
-	fmt.Printf("\nResults have been saved to local storage for future reference.\n")
+	fmt.Printf("🔑 Total Keywords Extracted: %d\n", totalKeywords)
+
+	// Show only failed results for cleaner output
+	failedResults := 0
+	for _, result := range results {
+		if !result.Success {
+			failedResults++
+		}
+	}
+
+	if failedResults > 0 {
+		fmt.Printf("\n❌ Failed Sites (%d):\n", failedResults)
+		for _, result := range results {
+			if !result.Success {
+				maskedURL := secureLog.MaskSitemapURL(result.SitemapURL)
+				fmt.Printf("   • %s - %s\n", maskedURL, result.Error)
+			}
+		}
+	}
+
+	fmt.Printf("\n💾 Results have been saved to local storage for future reference.\n")
 	
 	// Export data summary for GitHub Actions
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
@@ -312,11 +328,11 @@ func printUsage() {
 	fmt.Println("    -workers int           Sitemap workers (default: 15, env: SITEMAP_WORKERS)")
 	fmt.Println("    -debug                 Enable debug logging (env: DEBUG)")
 	fmt.Println("    -backend-api-key string Backend API key (env: BACKEND_API_KEY)")
-	fmt.Println("    -batch-size int        Keywords per batch (default: 8, env: BATCH_SIZE)")
+	fmt.Println("    -batch-size int        Keywords per batch (default: 5, env: BATCH_SIZE)")
 	fmt.Println("")
 	fmt.Println("ADVANCED OPTIONS:")
 	fmt.Println("    -api-workers int       API query workers (default: 4, env: API_WORKERS)")
-	fmt.Println("    -api-rate-limit string API requests/sec (default: 1.0, env: API_RATE_LIMIT)")
+	fmt.Println("    -api-rate-limit string API requests/sec (default: 2.0, env: API_RATE_LIMIT)")
 	fmt.Println("    -sitemap-rate-limit string Sitemap requests/sec (default: 30.0, env: SITEMAP_RATE_LIMIT)")
 	fmt.Println("    -max-urls int          Max URLs per sitemap (default: 100000, env: MAX_URLS_PER_SITEMAP)")
 	fmt.Println("    -help                  Show this help message")
@@ -327,9 +343,9 @@ func printUsage() {
 	fmt.Println("    SITEMAP_URLS           Comma-separated sitemap URLs")
 	fmt.Println("    SITEMAP_WORKERS        Number of sitemap workers (15)")
 	fmt.Println("    API_WORKERS            Number of API workers (4)")
-	fmt.Println("    API_RATE_LIMIT         API requests per second (1.0)")
+	fmt.Println("    API_RATE_LIMIT         API requests per second (2.0)")
 	fmt.Println("    SITEMAP_RATE_LIMIT     Sitemap requests per second (30.0)")
-	fmt.Println("    BATCH_SIZE             Keywords per API batch (8)")
+	fmt.Println("    BATCH_SIZE             Keywords per API batch (5)")
 	fmt.Println("    MAX_URLS_PER_SITEMAP   Max URLs per sitemap (100000)")
 	fmt.Println("    DEBUG                  Enable debug logging (false)")
 	fmt.Println("")

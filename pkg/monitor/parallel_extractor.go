@@ -8,51 +8,100 @@ import (
 	"sitemap-go/pkg/extractor"
 )
 
-// ParallelKeywordExtractor extracts keywords from URLs using all CPU cores
+// stringSlicePool provides reusable string slices to reduce allocations
+var stringSlicePool = sync.Pool{
+	New: func() interface{} {
+		return make([]string, 0, 32) // Increased initial capacity based on typical usage
+	},
+}
+
+// getStringSlice gets a reusable string slice from pool
+func getStringSlice() []string {
+	slice := stringSlicePool.Get().([]string)
+	return slice[:0] // Ensure slice is empty but retains capacity
+}
+
+// putStringSlice returns a string slice to pool after clearing it
+func putStringSlice(s []string) {
+	// Adaptive pooling: only pool slices within reasonable size range
+	if cap(s) < 8 || cap(s) > 128 { // Don't pool too small or too large slices
+		return
+	}
+	s = s[:0] // Clear slice but keep capacity
+	stringSlicePool.Put(s)
+}
+
+// ParallelKeywordExtractor extracts keywords from URLs using optimized concurrency
 type ParallelKeywordExtractor struct {
 	extractor *extractor.URLKeywordExtractor
 	workers   int
 }
 
-// NewParallelKeywordExtractor creates a new parallel keyword extractor
+// NewParallelKeywordExtractor creates a new parallel keyword extractor with configurable workers
 func NewParallelKeywordExtractor() *ParallelKeywordExtractor {
+	// Use CPU cores count for CPU-bound keyword extraction, not 2x
+	workers := runtime.NumCPU()
+	if workers > 8 { // Cap at 8 to prevent excessive goroutines
+		workers = 8
+	}
 	return &ParallelKeywordExtractor{
 		extractor: extractor.NewURLKeywordExtractor(),
-		workers:   runtime.NumCPU() * 2, // Use 2x CPU cores for optimal performance
+		workers:   workers,
 	}
 }
 
-// ExtractFromURLs extracts keywords from multiple URLs in parallel
-// This is a CPU-bound operation that should use all available cores
+// NewParallelKeywordExtractorWithWorkers creates extractor with specific worker count
+func NewParallelKeywordExtractorWithWorkers(workers int) *ParallelKeywordExtractor {
+	if workers <= 0 {
+		workers = runtime.NumCPU()
+	}
+	if workers > 16 { // Reasonable upper limit
+		workers = 16
+	}
+	return &ParallelKeywordExtractor{
+		extractor: extractor.NewURLKeywordExtractor(),
+		workers:   workers,
+	}
+}
+
+// ExtractFromURLs extracts keywords from multiple URLs in parallel with optimized memory usage
+// This is a CPU-bound operation optimized for memory efficiency and controlled concurrency
 func (pke *ParallelKeywordExtractor) ExtractFromURLs(ctx context.Context, urls []parser.URL, primarySelector func([]string) string) ([]string, []string, int) {
 	if len(urls) == 0 {
 		return []string{}, []string{}, 0
 	}
 
-	// Pre-allocate result slices with estimated capacity
-	estimatedResults := len(urls) / 5 // Assume 20% URLs have keywords
-	
+	// Pre-allocate result slices with better capacity estimation
+	estimatedResults := len(urls) / 4 // Assume 25% URLs have keywords (more realistic)
+	if estimatedResults < 10 {
+		estimatedResults = 10
+	}
+
 	// Result collector with pre-allocated capacity
 	type result struct {
 		keyword string
 		url     string
 	}
-	
-	// Create buffered channels for work distribution
-	urlChan := make(chan parser.URL, 100)
-	resultChan := make(chan *result, 100)
-	
-	// Start worker goroutines
+
+	// Create buffered channels with backpressure control
+	// Smaller buffer to prevent excessive memory usage
+	bufferSize := pke.workers * 2
+	if bufferSize > 50 {
+		bufferSize = 50
+	}
+	urlChan := make(chan parser.URL, bufferSize)
+	resultChan := make(chan *result, bufferSize)
+
+	// Start worker goroutines with optimized processing
 	var wg sync.WaitGroup
-	failedCount := 0
-	var failedMu sync.Mutex
-	
-	// Start workers - use all CPU cores for this CPU-bound task
+	var failedCount int64
+
+	// Start workers - use configured worker count for CPU-bound task
 	for i := 0; i < pke.workers; i++ {
 		wg.Add(1)
-		go func() {
+		go func(workerID int) {
 			defer wg.Done()
-			
+
 			for url := range urlChan {
 				// Check context cancellation
 				select {
@@ -60,33 +109,41 @@ func (pke *ParallelKeywordExtractor) ExtractFromURLs(ctx context.Context, urls [
 					return
 				default:
 				}
-				
-				// Extract keywords (this is the CPU-intensive part)
-				urlKeywords, err := pke.extractor.Extract(url.Address)
+
+				// Extract keywords with memory pool optimization
+				urlKeywords := getStringSlice() // Get reusable slice
+				extractedKeywords, err := pke.extractor.Extract(url.Address)
 				if err != nil {
-					failedMu.Lock()
+					putStringSlice(urlKeywords) // Return slice to pool
 					failedCount++
-					failedMu.Unlock()
 					continue
 				}
-				
+
+				// Copy extracted keywords to pooled slice
+				urlKeywords = append(urlKeywords, extractedKeywords...)
+
 				if len(urlKeywords) > 0 {
 					primaryKeyword := primarySelector(urlKeywords)
-					resultChan <- &result{
-						keyword: primaryKeyword,
-						url:     url.Address,
+					if primaryKeyword != "" {
+						resultChan <- &result{
+							keyword: primaryKeyword,
+							url:     url.Address,
+						}
 					}
 				}
+
+				// Return slice to pool
+				putStringSlice(urlKeywords)
 			}
-		}()
+		}(i)
 	}
-	
-	// Start result collector goroutine
+
+	// Start result collector goroutine with optimized memory allocation
 	keywords := make([]string, 0, estimatedResults)
 	urlList := make([]string, 0, estimatedResults)
 	var collectorWg sync.WaitGroup
 	collectorWg.Add(1)
-	
+
 	go func() {
 		defer collectorWg.Done()
 		for r := range resultChan {
@@ -94,27 +151,37 @@ func (pke *ParallelKeywordExtractor) ExtractFromURLs(ctx context.Context, urls [
 			urlList = append(urlList, r.url)
 		}
 	}()
-	
-	// Feed URLs to workers
-	for _, url := range urls {
-		select {
-		case urlChan <- url:
-		case <-ctx.Done():
-			close(urlChan)
-			wg.Wait()
-			close(resultChan)
-			collectorWg.Wait()
-			return keywords, urlList, failedCount
+
+	// Feed URLs to workers with controlled rate to prevent memory spikes
+	go func() {
+		defer close(urlChan)
+		for _, url := range urls {
+			select {
+			case urlChan <- url:
+			case <-ctx.Done():
+				return
+			}
 		}
-	}
-	
-	// Close input channel and wait for workers
-	close(urlChan)
+	}()
+
+	// Wait for all workers to complete
 	wg.Wait()
-	
+
 	// Close result channel and wait for collector
 	close(resultChan)
 	collectorWg.Wait()
-	
-	return keywords, urlList, failedCount
+
+	return keywords, urlList, int(failedCount)
+}
+
+// GetWorkerCount returns the configured number of workers
+func (pke *ParallelKeywordExtractor) GetWorkerCount() int {
+	return pke.workers
+}
+
+// SetWorkerCount updates the worker count (for dynamic adjustment)
+func (pke *ParallelKeywordExtractor) SetWorkerCount(workers int) {
+	if workers > 0 && workers <= 16 {
+		pke.workers = workers
+	}
 }

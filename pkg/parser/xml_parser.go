@@ -58,8 +58,8 @@ func (p *XMLParser) SetConcurrentLimit(limit int) {
 }
 
 func (p *XMLParser) Parse(ctx context.Context, sitemapURL string) ([]URL, error) {
-	p.log.Debug("Starting sitemap parse")
-	
+	// Removed debug logging for cleaner output
+
 	// Download sitemap content
 	content, err := p.downloadSitemap(ctx, sitemapURL)
 	if err != nil {
@@ -79,8 +79,13 @@ func (p *XMLParser) Parse(ctx context.Context, sitemapURL string) ([]URL, error)
 	// Try parsing as sitemap index first
 	var sitemapIndex xmlSitemapIndex
 	if err := xml.Unmarshal(data, &sitemapIndex); err == nil && len(sitemapIndex.Sitemaps) > 0 {
-		p.log.WithField("count", len(sitemapIndex.Sitemaps)).Info("Processing sitemap index")
-		
+		// Only log for large sitemap indexes to reduce log noise
+		if len(sitemapIndex.Sitemaps) > 5 {
+			p.log.WithField("count", len(sitemapIndex.Sitemaps)).Info("Processing large sitemap index")
+		} else {
+			p.log.WithField("count", len(sitemapIndex.Sitemaps)).Debug("Processing sitemap index")
+		}
+
 		// Process sitemaps concurrently
 		urls = p.processSitemapsIndexConcurrently(ctx, sitemapIndex.Sitemaps)
 		return urls, nil

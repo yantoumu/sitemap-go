@@ -136,11 +136,20 @@ func (sp *SubmissionPool) processTask(ctx context.Context, task SubmissionTask) 
 	err := sp.client.SubmitBatches(task.Data)
 	duration := time.Since(startTime)
 	
-	sp.log.WithFields(map[string]interface{}{
-		"data_count": len(task.Data),
-		"duration":   duration.String(),
-		"success":    err == nil,
-	}).Info("Submission task processed")
+	// Only log significant events to reduce log noise
+	if err != nil || len(task.Data) > 100 {
+		sp.log.WithFields(map[string]interface{}{
+			"data_count": len(task.Data),
+			"duration":   duration.String(),
+			"success":    err == nil,
+		}).Info("Submission task processed")
+	} else {
+		sp.log.WithFields(map[string]interface{}{
+			"data_count": len(task.Data),
+			"duration":   duration.String(),
+			"success":    err == nil,
+		}).Debug("Submission task processed")
+	}
 	
 	return err
 }

@@ -290,20 +290,8 @@ func (h *EmptyContentHandler) findURLsInLine(line string, lineNum int) []URL {
 	return urls
 }
 
-// isValidURL validates if a string is a valid URL
+// isValidURL validates if a string is a valid URL using common utilities
 func (h *EmptyContentHandler) isValidURL(urlStr string) bool {
-	if urlStr == "" || len(urlStr) > 2048 {
-		return false
-	}
-	
-	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
-		return false
-	}
-	
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return false
-	}
-	
-	return parsedURL.Host != ""
+	utils := NewCommonParserUtils()
+	return utils.URLValidator().IsValidURL(urlStr)
 }

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"strings"
 	"sync"
 )
@@ -12,14 +13,20 @@ type SimpleURLPool struct {
 	urls    []string
 	mu      sync.RWMutex
 	closed  bool
+	ctx     context.Context
+	cancel  context.CancelFunc
+	once    sync.Once // Ensure fillChannel starts only once
 }
 
 // NewSimpleURLPool creates a simple channel-based URL pool
 func NewSimpleURLPool(urlString string) *SimpleURLPool {
 	if urlString == "" {
+		ctx, cancel := context.WithCancel(context.Background())
 		return &SimpleURLPool{
 			urlChan: make(chan string, 1),
 			urls:    []string{},
+			ctx:     ctx,
+			cancel:  cancel,
 		}
 	}
 	
@@ -35,61 +42,68 @@ func NewSimpleURLPool(urlString string) *SimpleURLPool {
 	}
 	
 	if len(urls) == 0 {
+		ctx, cancel := context.WithCancel(context.Background())
 		return &SimpleURLPool{
 			urlChan: make(chan string, 1),
 			urls:    []string{},
+			ctx:     ctx,
+			cancel:  cancel,
 		}
 	}
-	
+
 	// Create buffered channel for round-robin
+	ctx, cancel := context.WithCancel(context.Background())
 	pool := &SimpleURLPool{
 		urlChan: make(chan string, len(urls)*2), // Buffer for smooth operation
 		urls:    urls,
+		ctx:     ctx,
+		cancel:  cancel,
 	}
-	
+
 	// Fill the channel with URLs in round-robin fashion
-	go pool.fillChannel()
-	
+	pool.once.Do(func() {
+		go pool.fillChannel()
+	})
+
 	return pool
 }
 
 // fillChannel continuously fills the channel with URLs in round-robin order
 func (p *SimpleURLPool) fillChannel() {
+	defer func() {
+		if r := recover(); r != nil {
+			// Gracefully handle any panic in fillChannel
+			return
+		}
+	}()
+
 	if len(p.urls) == 0 {
 		return
 	}
-	
+
 	index := 0
 	for {
+		// Check context cancellation first
+		select {
+		case <-p.ctx.Done():
+			return
+		default:
+		}
+
 		p.mu.RLock()
-		if p.closed {
+		if p.closed || len(p.urls) == 0 {
 			p.mu.RUnlock()
-			break
+			return
 		}
-		
-		if len(p.urls) == 0 {
-			p.mu.RUnlock()
-			break
-		}
-		
+
 		url := p.urls[index]
 		index = (index + 1) % len(p.urls) // Simple modulo, no overflow risk
 		p.mu.RUnlock()
-		
+
 		select {
 		case p.urlChan <- url:
 			// URL sent successfully
-		case <-func() chan struct{} {
-			// Non-blocking check if closed
-			p.mu.RLock()
-			defer p.mu.RUnlock()
-			if p.closed {
-				done := make(chan struct{})
-				close(done)
-				return done
-			}
-			return nil
-		}():
+		case <-p.ctx.Done():
 			return
 		}
 	}
@@ -145,10 +159,27 @@ func (p *SimpleURLPool) IsEmpty() bool {
 	return len(p.urls) == 0
 }
 
-// Close stops the background goroutine
+// Close stops the background goroutine safely
 func (p *SimpleURLPool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.closed {
+		return // Already closed
+	}
+
 	p.closed = true
+
+	// Cancel context to stop fillChannel goroutine
+	if p.cancel != nil {
+		p.cancel()
+	}
+
+	// Close channel safely
+	select {
+	case <-p.urlChan:
+		// Drain any remaining items
+	default:
+	}
 	close(p.urlChan)
 }

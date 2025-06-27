@@ -12,17 +12,21 @@ import (
 type ConcurrencyConfig struct {
 	// Sitemap抓取层 (高并发，快速完成I/O)
 	MainWorkers int `json:"main_workers"`
-	
+
 	// XML解析层 (CPU密集，充分利用多核)
 	ParseWorkers int `json:"parse_workers"`
-	
+
 	// 关键词提取层 (轻量级，高并发)
 	ExtractWorkers int `json:"extract_workers"`
-	
+
 	// API查询控制 (真正的瓶颈，需要严格控制)
 	APIWorkers        int     `json:"api_workers"`         // Google Trends API worker数量
 	APIRequestsPerSecond float64 `json:"api_requests_per_second"` // API请求频率控制
-	
+
+	// 原子并发控制 (inspired by 1.js)
+	MaxConcurrentPerAPI int           `json:"max_concurrent_per_api"` // 每个API端点的最大并发数
+	ConcurrencyTimeout  time.Duration `json:"concurrency_timeout"`   // 并发获取超时时间
+
 	// Sitemap抓取控制 (可以更激进)
 	SitemapRequestsPerSecond float64 `json:"sitemap_requests_per_second"` // Sitemap抓取频率
 	
@@ -41,13 +45,17 @@ func DefaultConcurrencyConfig() ConcurrencyConfig {
 	return ConcurrencyConfig{
 		// Sitemap处理层：高并发快速完成
 		MainWorkers:       15,  // 🚀 15个sitemap抓取worker (I/O密集，可以高并发)
-		ParseWorkers:      10,  // 🚀 10个XML解析worker (CPU密集，充分利用多核)  
+		ParseWorkers:      10,  // 🚀 10个XML解析worker (CPU密集，充分利用多核)
 		ExtractWorkers:    8,   // 🚀 8个关键词提取worker (轻量级，快速处理)
-		
+
 		// API查询层：优化为双SEOKey API配置
 		APIWorkers:        4,   // 🎯 4个API查询worker (双API均衡负载)
 		APIRequestsPerSecond: 2.5, // 🎯 每个API每秒2.5个请求 (双API总计5 req/sec)
-		
+
+		// 原子并发控制：精确管理API请求 (inspired by 1.js)
+		MaxConcurrentPerAPI: 10,              // 🎯 每个API端点最大10个并发请求
+		ConcurrencyTimeout:  5 * time.Second, // 🎯 5秒并发获取超时
+
 		// Sitemap抓取频率：可以更激进
 		SitemapRequestsPerSecond: 30.0, // 🚀 每秒30个sitemap请求 (普通HTTP请求)
 		

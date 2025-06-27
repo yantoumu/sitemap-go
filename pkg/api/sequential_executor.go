@@ -29,16 +29,16 @@ func (se *SequentialExecutor) Execute(ctx context.Context, fn func() error) erro
 	
 	// Execute function
 	err := fn()
-	
-	// Minimal 100ms delay for SEOKey API (much faster than 5 seconds)
-	// Only apply small delay to avoid overwhelming the API
+
+	// Reduced delay for SEOKey API - 50ms for better throughput
+	// SEOKey API has better rate limiting tolerance than Google Trends
 	select {
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(50 * time.Millisecond):
 		// Minimal delay completed
 	case <-ctx.Done():
 		// Context cancelled during delay
 		return ctx.Err()
 	}
-	
+
 	return err
 }

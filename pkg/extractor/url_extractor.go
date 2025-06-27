@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 
 	"sitemap-go/pkg/logger"
 )
@@ -32,11 +33,53 @@ var (
 		"pacman": true, "chess": true, "solitaire": true, "mahjong": true, "sudoku": true,
 	}
 	
-	// Regex patterns for cleaning
+	// Regex patterns for cleaning (pre-compiled for performance)
 	nonAlphaNumeric = regexp.MustCompile(`[^a-zA-Z0-9\s\-_]`)
 	multiSpace      = regexp.MustCompile(`\s+`)
 	multiDash       = regexp.MustCompile(`-+`)
+
+	// String builder pool for efficient string operations
+	stringBuilderPool = sync.Pool{
+		New: func() interface{} {
+			return &strings.Builder{}
+		},
+	}
+
+	// String slice pool for keyword collection
+	keywordSlicePool = sync.Pool{
+		New: func() interface{} {
+			return make([]string, 0, 8) // Pre-allocate capacity for 8 keywords
+		},
+	}
 )
+
+// getStringBuilder gets a reusable string builder from pool
+func getStringBuilder() *strings.Builder {
+	return stringBuilderPool.Get().(*strings.Builder)
+}
+
+// putStringBuilder returns a string builder to pool after resetting it
+func putStringBuilder(sb *strings.Builder) {
+	if sb.Cap() > 1024 { // Don't pool overly large builders
+		return
+	}
+	sb.Reset()
+	stringBuilderPool.Put(sb)
+}
+
+// getKeywordSlice gets a reusable keyword slice from pool
+func getKeywordSlice() []string {
+	return keywordSlicePool.Get().([]string)
+}
+
+// putKeywordSlice returns a keyword slice to pool after clearing it
+func putKeywordSlice(s []string) {
+	if cap(s) > 32 { // Don't pool overly large slices
+		return
+	}
+	s = s[:0] // Clear slice but keep capacity
+	keywordSlicePool.Put(s)
+}
 
 type URLKeywordExtractor struct {
 	filters        []Filter
@@ -56,40 +99,55 @@ func NewURLKeywordExtractor() *URLKeywordExtractor {
 
 func (e *URLKeywordExtractor) Extract(urlStr string) ([]string, error) {
 	// Optimized: removed debug logging for better performance
-	
+
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
 		// Only log errors, not debug info
 		return nil, err
 	}
 
-	// Extract keywords from path (optimized)
-	pathKeywords := e.extractFromPath(parsedURL.Path)
-	
-	// Extract keywords from query parameters
-	queryKeywords := e.extractFromQuery(parsedURL.Query())
-	
-	// Pre-allocate with estimated size for better performance
-	keywordMap := make(map[string]bool, len(pathKeywords)+len(queryKeywords))
+	// Extract keywords from path using pooled slice
+	pathKeywords := getKeywordSlice()
+	defer putKeywordSlice(pathKeywords)
+	pathKeywords = e.extractFromPathOptimized(parsedURL.Path, pathKeywords)
+
+	// Extract keywords from query parameters using pooled slice
+	queryKeywords := getKeywordSlice()
+	defer putKeywordSlice(queryKeywords)
+	queryKeywords = e.extractFromQueryOptimized(parsedURL.Query(), queryKeywords)
+
+	// Use map for deduplication with better size estimation
+	estimatedSize := len(pathKeywords) + len(queryKeywords)
+	if estimatedSize < 4 {
+		estimatedSize = 4
+	}
+	keywordMap := make(map[string]bool, estimatedSize)
+
+	// Add path keywords
 	for _, kw := range pathKeywords {
-		keywordMap[kw] = true
+		if kw != "" {
+			keywordMap[kw] = true
+		}
 	}
+
+	// Add query keywords
 	for _, kw := range queryKeywords {
-		keywordMap[kw] = true
+		if kw != "" {
+			keywordMap[kw] = true
+		}
 	}
-	
-	// Convert map to slice with pre-allocation
+
+	// Convert map to slice with exact allocation
 	keywords := make([]string, 0, len(keywordMap))
 	for kw := range keywordMap {
 		keywords = append(keywords, kw)
 	}
-	
+
 	// Apply filters
 	for _, filter := range e.filters {
 		keywords = filter.Apply(keywords)
 	}
-	
-	// Removed debug logging for performance
+
 	return keywords, nil
 }
 
@@ -220,24 +278,32 @@ func (e *URLKeywordExtractor) extractFromQuery(params url.Values) []string {
 }
 
 func (e *URLKeywordExtractor) splitCamelCase(word string) []string {
-	var result []string
-	var current strings.Builder
-	
+	// Use pooled string builder for efficiency
+	sb := getStringBuilder()
+	defer putStringBuilder(sb)
+
+	// Use pooled slice for results
+	result := getKeywordSlice()
+	defer putKeywordSlice(result)
+
 	for i, r := range word {
 		if i > 0 && 'A' <= r && r <= 'Z' {
-			if current.Len() > 0 {
-				result = append(result, strings.ToLower(current.String()))
-				current.Reset()
+			if sb.Len() > 0 {
+				result = append(result, strings.ToLower(sb.String()))
+				sb.Reset()
 			}
 		}
-		current.WriteRune(r)
+		sb.WriteRune(r)
 	}
-	
-	if current.Len() > 0 {
-		result = append(result, strings.ToLower(current.String()))
+
+	if sb.Len() > 0 {
+		result = append(result, strings.ToLower(sb.String()))
 	}
-	
-	return result
+
+	// Return a copy since we're returning the pooled slice
+	finalResult := make([]string, len(result))
+	copy(finalResult, result)
+	return finalResult
 }
 
 // isGameNumber checks if a string is a gaming-relevant number
@@ -379,4 +445,106 @@ func (e *URLKeywordExtractor) convertHyphensToSpaces(segment string) string {
 	}
 	
 	return ""
+}
+
+// extractFromPathOptimized extracts keywords from URL path using pooled slice
+func (e *URLKeywordExtractor) extractFromPathOptimized(path string, keywords []string) []string {
+	if path == "" || path == "/" {
+		return keywords
+	}
+
+	// Remove leading/trailing slashes and split
+	path = strings.Trim(path, "/")
+	pathParts := strings.Split(path, "/")
+
+	// Process each path segment
+	for _, segment := range pathParts {
+		if segment == "" {
+			continue
+		}
+
+		// Check if this segment looks like a game name with hyphens
+		if e.isHyphenatedGameName(segment) {
+			// Convert hyphens to spaces and clean up
+			gameName := e.convertHyphensToSpaces(segment)
+			if gameName != "" {
+				keywords = append(keywords, gameName)
+			}
+		} else {
+			// Process as individual words (original logic)
+			parts := strings.FieldsFunc(segment, func(r rune) bool {
+				return r == '-' || r == '_' || r == '.'
+			})
+
+			for _, part := range parts {
+				// Normalize the part
+				normalized := e.Normalize(part)
+
+				// Skip empty, too short, or too long
+				if normalized == "" ||
+				   len(normalized) < e.minWordLength ||
+				   len(normalized) > e.maxWordLength {
+					continue
+				}
+
+				// Check if it's a game keyword (preserve these even if they're stop words)
+				if gameKeywords[normalized] {
+					keywords = append(keywords, normalized)
+					continue
+				}
+
+				// Skip regular stop words
+				if stopWords[normalized] {
+					continue
+				}
+
+				// Handle numbers specially for games (like "2048", "3d", etc.)
+				if e.isGameNumber(normalized) {
+					keywords = append(keywords, normalized)
+					continue
+				}
+
+				// Split camelCase and PascalCase
+				subWords := e.splitCamelCase(normalized)
+				for _, word := range subWords {
+					if len(word) >= e.minWordLength {
+						if gameKeywords[word] || (!stopWords[word] && !e.isCommonWord(word)) {
+							keywords = append(keywords, word)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return keywords
+}
+
+// extractFromQueryOptimized extracts keywords from query parameters using pooled slice
+func (e *URLKeywordExtractor) extractFromQueryOptimized(params url.Values, keywords []string) []string {
+	// Common parameter names that might contain keywords
+	keywordParams := []string{"q", "query", "search", "keyword", "tag", "category", "title"}
+
+	for _, param := range keywordParams {
+		if values, exists := params[param]; exists {
+			for _, value := range values {
+				// Split by common separators
+				words := strings.FieldsFunc(value, func(r rune) bool {
+					return r == ' ' || r == ',' || r == '+' || r == '|'
+				})
+
+				for _, word := range words {
+					normalized := e.Normalize(word)
+					if normalized != "" &&
+					   len(normalized) >= e.minWordLength &&
+					   len(normalized) <= e.maxWordLength &&
+					   !stopWords[normalized] {
+						keywords = append(keywords, normalized)
+					}
+				}
+			}
+		}
+	}
+
+	return keywords
 }

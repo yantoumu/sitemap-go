@@ -21,3 +21,8 @@ type Keyword struct {
 type APIClient interface {
 	Query(ctx context.Context, keywords []string) (*APIResponse, error)
 }
+
+// ConcurrencyConfigurable interface for clients that support concurrency control
+type ConcurrencyConfigurable interface {
+	SetConcurrencyLimiter(limiter ConcurrencyLimiter)
+}

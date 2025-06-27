@@ -365,7 +365,12 @@ func (p *EncodingSafeXMLParser) parseXMLContent(content []byte) ([]URL, error) {
 	// Try parsing as sitemap index first
 	var sitemapIndex xmlSitemapIndex
 	if err := decoder.Decode(&sitemapIndex); err == nil && len(sitemapIndex.Sitemaps) > 0 {
-		p.log.WithField("count", len(sitemapIndex.Sitemaps)).Info("Processing sitemap index")
+		// Only log for large sitemap indexes to reduce log noise
+		if len(sitemapIndex.Sitemaps) > 5 {
+			p.log.WithField("count", len(sitemapIndex.Sitemaps)).Info("Processing large sitemap index")
+		} else {
+			p.log.WithField("count", len(sitemapIndex.Sitemaps)).Debug("Processing sitemap index")
+		}
 		// Note: This would need recursive processing, simplified for now
 		for _, sitemap := range sitemapIndex.Sitemaps {
 			if sitemap.Loc != "" {

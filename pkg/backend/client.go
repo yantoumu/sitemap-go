@@ -12,9 +12,10 @@ import (
 )
 
 type httpBackendClient struct {
-	config BackendConfig
-	client *fasthttp.Client
-	log    *logger.Logger
+	config              BackendConfig
+	client              *fasthttp.Client
+	log                 *logger.Logger
+	concurrentSubmitter *ConcurrentSubmitter
 }
 
 // NewBackendClient creates a new backend API client
@@ -29,19 +30,25 @@ func NewBackendClient(config BackendConfig) (BackendClient, error) {
 		return nil, fmt.Errorf("backend API key is required - set BACKEND_API_KEY environment variable")
 	}
 
-	// Create reusable client with optimized settings
+	// Create reusable client with production-optimized settings
 	client := &fasthttp.Client{
 		ReadTimeout:         config.Timeout,
 		WriteTimeout:        config.Timeout,
-		MaxConnsPerHost:     100,
-		MaxIdleConnDuration: 90 * time.Second,
+		MaxConnsPerHost:     20,  // Reduced from 100 to prevent overwhelming backend
+		MaxIdleConnDuration: 30 * time.Second,  // Reduced from 90s for better resource management
+		MaxConnDuration:     5 * time.Minute,   // Add max connection duration
 	}
 
-	return &httpBackendClient{
+	backendClient := &httpBackendClient{
 		config: config,
 		client: client,
 		log:    logger.GetLogger().WithField("component", "backend_client"),
-	}, nil
+	}
+
+	// Initialize concurrent submitter
+	backendClient.concurrentSubmitter = NewConcurrentSubmitter(backendClient)
+
+	return backendClient, nil
 }
 
 // SubmitBatch submits a single batch of keyword metrics with GZIP compression
@@ -85,11 +92,19 @@ func (c *httpBackendClient) SubmitBatch(batch KeywordMetricsBatch) (*BackendResp
 		requestBody = jsonData
 	}
 
-	// Create fasthttp request
+	// Create fasthttp request with safe resource management
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+
+	// Ensure resources are always released, even in panic situations
+	defer func() {
+		if req != nil {
+			fasthttp.ReleaseRequest(req)
+		}
+		if resp != nil {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
 
 	// Set request properties
 	url := c.config.BaseURL + "/api/v1/keyword-metrics/batch"
@@ -116,9 +131,11 @@ func (c *httpBackendClient) SubmitBatch(batch KeywordMetricsBatch) (*BackendResp
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 
-	// Check status code
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode(), string(resp.Body()))
+	// Check status code - accept both 200 OK and 202 Accepted
+	statusCode := resp.StatusCode()
+	if statusCode != fasthttp.StatusOK && statusCode != fasthttp.StatusAccepted {
+		// Don't expose full response body in error - potential backend info leak
+		return nil, fmt.Errorf("Backend API returned status %d (response body hidden for security)", statusCode)
 	}
 
 	// Parse response
@@ -136,73 +153,8 @@ func (c *httpBackendClient) SubmitBatch(batch KeywordMetricsBatch) (*BackendResp
 	return &backendResp, nil
 }
 
-// SubmitBatches splits data into batches and submits them sequentially
+// SubmitBatches splits data into batches and submits them with controlled concurrency
 func (c *httpBackendClient) SubmitBatches(data []KeywordMetricsData) error {
-	if len(data) == 0 {
-		c.log.Debug("No data to submit")
-		return nil
-	}
-
-	totalBatches := (len(data) + c.config.BatchSize - 1) / c.config.BatchSize
-	
-	c.log.WithFields(map[string]interface{}{
-		"total_keywords": len(data),
-		"batch_size":     c.config.BatchSize,
-		"total_batches":  totalBatches,
-	}).Info("Starting batch submission")
-
-	successCount := 0
-	failureCount := 0
-
-	for i := 0; i < len(data); i += c.config.BatchSize {
-		end := i + c.config.BatchSize
-		if end > len(data) {
-			end = len(data)
-		}
-
-		batchData := data[i:end]
-		batchNum := i/c.config.BatchSize + 1
-
-		c.log.WithFields(map[string]interface{}{
-			"batch_number": batchNum,
-			"batch_size":   len(batchData),
-			"progress":     fmt.Sprintf("%d/%d", batchNum, totalBatches),
-		}).Info("Submitting batch")
-
-		resp, err := c.SubmitBatch(KeywordMetricsBatch(batchData))
-		if err != nil {
-			c.log.WithError(err).WithField("batch_number", batchNum).Error("Batch submission failed")
-			failureCount++
-			continue
-		}
-
-		if resp.Code != 0 {
-			c.log.WithFields(map[string]interface{}{
-				"batch_number":     batchNum,
-				"response_code":    resp.Code,
-				"response_message": resp.Message,
-			}).Error("Backend API returned error")
-			failureCount++
-			continue
-		}
-
-		successCount++
-		c.log.WithField("batch_number", batchNum).Info("Batch submitted successfully")
-
-		// Small delay between batches to avoid overwhelming the backend
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	c.log.WithFields(map[string]interface{}{
-		"total_batches":    totalBatches,
-		"successful_batches": successCount,
-		"failed_batches":   failureCount,
-		"success_rate":     fmt.Sprintf("%.1f%%", float64(successCount)/float64(totalBatches)*100),
-	}).Info("Batch submission completed")
-
-	if failureCount > 0 {
-		return fmt.Errorf("failed to submit %d out of %d batches", failureCount, totalBatches)
-	}
-
-	return nil
+	return c.concurrentSubmitter.SubmitBatchesConcurrently(data, c.config.BatchSize)
 }
+

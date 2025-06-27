@@ -2,12 +2,10 @@ package storage
 
 import (
 	"context"
-	"crypto/md5"
-	"fmt"
-	"sort"
 	"time"
 
 	"sitemap-go/pkg/logger"
+	"sitemap-go/pkg/utils"
 )
 
 // QueryState represents the state of a URL query

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -129,7 +130,7 @@ func NewSitemapMonitor(cfg interface{}) (*SitemapMonitor, error) {
 	// Create rate limiter pool for resource management
 	rateLimiterPool := NewRateLimiterPool()
 	
-	return &SitemapMonitor{
+	monitor := &SitemapMonitor{
 		parserFactory:      parserFactory,
 		keywordExtractor:   keywordExtractor,
 		apiClient:          trendAPIClient,
@@ -145,7 +146,12 @@ func NewSitemapMonitor(cfg interface{}) (*SitemapMonitor, error) {
 		apiExecutor:        api.NewSequentialExecutor(), // Sequential execution, no forced delays
 		log:                logger.GetLogger().WithField("component", "sitemap_monitor"),
 		secureLog:          logger.GetSecurityLogger(),
-	}, nil
+	}
+
+	// Configure atomic concurrency control for API client (inspired by 1.js)
+	monitor.configureAtomicConcurrencyControl(config.TrendAPIBaseURL)
+
+	return monitor, nil
 }
 
 // NewSitemapMonitorWithBackend creates a new sitemap monitor with backend configuration
@@ -298,15 +304,33 @@ func (sm *SitemapMonitor) ProcessSitemaps(ctx context.Context, sitemapURLs []str
 		"deduplication_ratio":   fmt.Sprintf("%.1f%%", float64(len(uniqueKeywords))/float64(len(allKeywords))*100),
 	}).Info("Global deduplication completed")
 	
-	// Step 3: Query SEOKey API for unique keywords
-	if len(uniqueKeywords) > 0 {
-		sm.log.WithField("unique_keywords", len(uniqueKeywords)).Info("Step 3: Starting SEOKey API queries")
-		err = sm.queryAndSubmitKeywords(ctx, uniqueKeywords, keywordToSpecificURLMap)
+	// Step 2.5: Filter out already processed sitemaps
+	sm.log.WithField("total_sitemaps", len(sitemapURLs)).Info("Step 2.5: Checking for already processed sitemaps")
+	unprocessedSitemaps, err := sm.filterUnprocessedSitemaps(ctx, sitemapURLs)
+	if err != nil {
+		sm.secureLog.SafeError("Failed to filter processed sitemaps", err, nil)
+		unprocessedSitemaps = sitemapURLs // Fallback to process all
+	}
+
+	// Filter keywords to only include those from unprocessed sitemaps
+	filteredKeywords := sm.filterKeywordsForUnprocessedSitemaps(uniqueKeywords, keywordToSpecificURLMap, unprocessedSitemaps)
+
+	sm.log.WithFields(map[string]interface{}{
+		"total_sitemaps":        len(sitemapURLs),
+		"unprocessed_sitemaps":  len(unprocessedSitemaps),
+		"keywords_before_filter": len(uniqueKeywords),
+		"keywords_after_filter":  len(filteredKeywords),
+	}).Info("Sitemap filtering completed")
+
+	// Step 3: Query SEOKey API for keywords from unprocessed sitemaps only
+	if len(filteredKeywords) > 0 {
+		sm.log.WithField("filtered_keywords", len(filteredKeywords)).Info("Step 3: Starting SEOKey API queries for unprocessed sitemaps")
+		err = sm.queryAndSubmitKeywords(ctx, filteredKeywords, keywordToSpecificURLMap)
 		if err != nil {
 			sm.secureLog.SafeError("Failed to query and submit keywords", err, nil)
 		}
 	} else {
-		sm.log.Warn("No unique keywords found to query")
+		sm.log.Info("No keywords from unprocessed sitemaps found to query")
 	}
 	
 	// Step 4: Update sitemap results and save URL hashes
@@ -367,8 +391,16 @@ func (sm *SitemapMonitor) MonitorSitemaps(ctx context.Context, config MonitorCon
 	resultChannel := sm.workerPool.GetResultChannel()
 	processedResults := 0
 	
-	// Wait for all tasks to complete with timeout
-	timeout := time.After(10 * time.Minute) // Configurable timeout
+	// Wait for all tasks to complete with configurable timeout
+	concurrencyConfig := sm.concurrencyManager.GetCurrentConfig()
+	processingTimeout := concurrencyConfig.DownloadTimeout * time.Duration(len(filteredURLs)) // Scale with number of URLs
+	if processingTimeout > 15*time.Minute {
+		processingTimeout = 15 * time.Minute // Cap at 15 minutes
+	}
+	if processingTimeout < 2*time.Minute {
+		processingTimeout = 2 * time.Minute // Minimum 2 minutes
+	}
+	timeout := time.After(processingTimeout)
 	
 	for processedResults < len(filteredURLs) {
 		select {
@@ -630,6 +662,7 @@ func (sm *SitemapMonitor) shouldExcludeGameURL(sitemapURL string) bool {
 }
 
 // selectPrimaryKeyword selects the most representative keyword from a list
+// Uses improved algorithm considering both length and semantic importance
 func (sm *SitemapMonitor) selectPrimaryKeyword(keywords []string) string {
 	if len(keywords) == 0 {
 		return ""
@@ -637,22 +670,76 @@ func (sm *SitemapMonitor) selectPrimaryKeyword(keywords []string) string {
 	if len(keywords) == 1 {
 		return keywords[0]
 	}
-	
-	// Strategy: Select the longest keyword as it's usually most descriptive
-	// For game URLs, longer keywords often contain the actual game name
-	longest := keywords[0]
+
+	// Strategy: Score keywords based on multiple factors
+	bestKeyword := keywords[0]
+	bestScore := sm.scoreKeyword(bestKeyword)
+
 	for _, keyword := range keywords[1:] {
-		if len(keyword) > len(longest) {
-			longest = keyword
+		score := sm.scoreKeyword(keyword)
+		if score > bestScore {
+			bestScore = score
+			bestKeyword = keyword
 		}
 	}
-	
+
 	sm.secureLog.SafeDebug("Selected primary keyword", map[string]interface{}{
 		"all_keywords":     keywords,
-		"selected_keyword": longest,
+		"selected_keyword": bestKeyword,
+		"score":           bestScore,
 	})
-	
-	return longest
+
+	return bestKeyword
+}
+
+// scoreKeyword calculates a score for keyword selection
+// Higher score indicates better keyword quality
+func (sm *SitemapMonitor) scoreKeyword(keyword string) float64 {
+	if keyword == "" {
+		return 0
+	}
+
+	score := float64(len(keyword)) // Base score from length
+
+	// Bonus for game-related terms
+	gameTerms := []string{"game", "play", "puzzle", "action", "adventure", "strategy", "arcade"}
+	for _, term := range gameTerms {
+		if strings.Contains(strings.ToLower(keyword), term) {
+			score += 10 // Significant bonus for game terms
+			break
+		}
+	}
+
+	// Penalty for common generic terms
+	genericTerms := []string{"index", "page", "home", "main", "default"}
+	for _, term := range genericTerms {
+		if strings.ToLower(keyword) == term {
+			score -= 5 // Penalty for generic terms
+			break
+		}
+	}
+
+	// Bonus for keywords with meaningful separators (likely compound terms)
+	if strings.Contains(keyword, "-") || strings.Contains(keyword, "_") {
+		score += 3
+	}
+
+	return score
+}
+
+// getAPIEndpointForRateLimiting returns the API endpoint identifier for rate limiting
+// Enables proper dual API utilization with independent rate limiters
+func (sm *SitemapMonitor) getAPIEndpointForRateLimiting() string {
+	// Check if using DualAPIClient
+	if dualClient, ok := sm.apiClient.(interface{ GetCurrentAPIEndpoint() string }); ok {
+		endpoint := dualClient.GetCurrentAPIEndpoint()
+		if endpoint != "" {
+			return endpoint
+		}
+	}
+
+	// Fallback to generic identifier for single API clients
+	return "default-api"
 }
 
 // saveFailedKeywords saves keywords that failed API query for retry
@@ -828,8 +915,9 @@ func (sm *SitemapMonitor) extractKeywordsFromSitemap(ctx context.Context, sitema
 		sm.log.WithField("total_urls", len(urls)).Debug("Starting parallel keyword extraction for large sitemap")
 	}
 	
-	// Use parallel extraction for maximum performance
-	parallelExtractor := NewParallelKeywordExtractor()
+	// Use parallel extraction with configured worker count for optimal performance
+	config := sm.concurrencyManager.GetCurrentConfig()
+	parallelExtractor := NewParallelKeywordExtractorWithWorkers(config.ExtractWorkers)
 	keywords, urlList, failedCount := parallelExtractor.ExtractFromURLs(ctx, urls, sm.selectPrimaryKeyword)
 	
 	// Log summary only if there are significant failures
@@ -849,19 +937,73 @@ func (sm *SitemapMonitor) extractKeywordsFromSitemap(ctx context.Context, sitema
 	return keywords, urlList, nil
 }
 
-// deduplicateKeywords removes duplicate keywords globally
+// deduplicateKeywords removes duplicate keywords globally with intelligent similarity detection
 func (sm *SitemapMonitor) deduplicateKeywords(keywords []string) []string {
-	keywordSet := make(map[string]bool)
-	var uniqueKeywords []string
-	
-	for _, keyword := range keywords {
-		if !keywordSet[keyword] {
-			keywordSet[keyword] = true
-			uniqueKeywords = append(uniqueKeywords, keyword)
-		}
+	if len(keywords) == 0 {
+		return keywords
 	}
-	
+
+	// Pre-allocate with estimated capacity
+	keywordSet := make(map[string]bool, len(keywords))
+	normalizedSet := make(map[string]string, len(keywords)) // normalized -> original mapping
+	var uniqueKeywords []string
+
+	for _, keyword := range keywords {
+		if keyword == "" {
+			continue
+		}
+
+		// Skip exact duplicates
+		if keywordSet[keyword] {
+			continue
+		}
+
+		// Normalize for similarity detection
+		normalized := sm.normalizeForDeduplication(keyword)
+
+		// Check if we already have a similar keyword
+		if existingKeyword, exists := normalizedSet[normalized]; exists {
+			// Keep the better quality keyword (higher score)
+			if sm.scoreKeyword(keyword) > sm.scoreKeyword(existingKeyword) {
+				// Replace the existing keyword with the better one
+				normalizedSet[normalized] = keyword
+				// Update in uniqueKeywords slice
+				for i, existing := range uniqueKeywords {
+					if existing == existingKeyword {
+						uniqueKeywords[i] = keyword
+						break
+					}
+				}
+				keywordSet[existingKeyword] = false // Mark old as removed
+				keywordSet[keyword] = true
+			}
+			// Skip adding the lower quality duplicate
+			continue
+		}
+
+		// Add new unique keyword
+		normalizedSet[normalized] = keyword
+		keywordSet[keyword] = true
+		uniqueKeywords = append(uniqueKeywords, keyword)
+	}
+
 	return uniqueKeywords
+}
+
+// normalizeForDeduplication creates a normalized form for similarity detection
+func (sm *SitemapMonitor) normalizeForDeduplication(keyword string) string {
+	// Convert to lowercase
+	normalized := strings.ToLower(keyword)
+
+	// Replace common separators with spaces
+	normalized = strings.ReplaceAll(normalized, "-", " ")
+	normalized = strings.ReplaceAll(normalized, "_", " ")
+	normalized = strings.ReplaceAll(normalized, ".", " ")
+
+	// Remove extra spaces
+	normalized = strings.Join(strings.Fields(normalized), " ")
+
+	return strings.TrimSpace(normalized)
 }
 
 // batchResult holds the result of a batch API query
@@ -871,18 +1013,15 @@ type batchResult struct {
 	err       error
 }
 
-// queryAndSubmitKeywords queries Google Trends in batches and submits results to backend
-// Uses concurrent batch processing with 8 keywords per batch and 4 workers
+// queryAndSubmitKeywords queries SEOKey API in batches and submits results to backend
+// Uses concurrent batch processing with configurable workers and optimized batch size
 func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords []string, keywordToSpecificURLMap map[string]string) error {
-	// Concurrent batch processing: 4 workers, 8 keywords per batch
-	const batchSize = 8
-	const concurrentWorkers = 4
+	// Get current configuration for dynamic worker count
+	config := sm.concurrencyManager.GetCurrentConfig()
+	batchSize := 10 // Maximum batch size for SEOKey API (API limit: 10 keywords per request)
+	concurrentWorkers := config.APIWorkers // Use configured worker count
 	
-	sm.log.WithFields(map[string]interface{}{
-		"total_keywords":     len(keywords),
-		"batch_size":        batchSize,
-		"concurrent_workers": concurrentWorkers,
-	}).Info("Starting concurrent API queries")
+	sm.log.WithField("total_keywords", len(keywords)).Info("🔍 Starting API keyword analysis")
 	
 	// Create batches
 	var batches [][]string
@@ -910,12 +1049,17 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 		wg.Add(1)
 		go sm.processBatchWorker(ctx, i, batchChan, resultChan, keywordToSpecificURLMap, &wg)
 	}
-	
-	// Wait for all workers to complete
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
+
+	// Wait for all workers to complete - pass wg as parameter to avoid race condition
+	go func(waitGroup *sync.WaitGroup, resChan chan<- batchResult) {
+		defer func() {
+			if r := recover(); r != nil {
+				sm.log.WithField("panic", r).Error("Result channel closer panicked")
+			}
+		}()
+		waitGroup.Wait()
+		close(resChan)
+	}(&wg, resultChan)
 	
 	// Collect results
 	var allTrendData []api.Keyword
@@ -994,6 +1138,51 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 	return nil
 }
 
+// filterUnprocessedSitemaps returns sitemaps that haven't been processed yet
+func (sm *SitemapMonitor) filterUnprocessedSitemaps(ctx context.Context, sitemapURLs []string) ([]string, error) {
+	var unprocessedSitemaps []string
+
+	for _, sitemapURL := range sitemapURLs {
+		processed, err := sm.simpleTracker.IsURLProcessed(ctx, sitemapURL)
+		if err != nil {
+			sm.secureLog.WarnWithURL("Failed to check if URL is processed", sitemapURL, map[string]interface{}{
+				"error": err.Error(),
+			})
+			// On error, assume not processed to avoid skipping
+			unprocessedSitemaps = append(unprocessedSitemaps, sitemapURL)
+			continue
+		}
+
+		if !processed {
+			unprocessedSitemaps = append(unprocessedSitemaps, sitemapURL)
+		} else {
+			sm.secureLog.DebugWithURL("Skipping already processed sitemap", sitemapURL, nil)
+		}
+	}
+
+	return unprocessedSitemaps, nil
+}
+
+// filterKeywordsForUnprocessedSitemaps filters keywords to only include those from unprocessed sitemaps
+func (sm *SitemapMonitor) filterKeywordsForUnprocessedSitemaps(keywords []string, keywordToURLMap map[string]string, unprocessedSitemaps []string) []string {
+	// Create a set of unprocessed sitemap URLs for fast lookup
+	unprocessedSet := make(map[string]bool)
+	for _, sitemapURL := range unprocessedSitemaps {
+		unprocessedSet[sitemapURL] = true
+	}
+
+	var filteredKeywords []string
+	for _, keyword := range keywords {
+		if sitemapURL, exists := keywordToURLMap[keyword]; exists {
+			if unprocessedSet[sitemapURL] {
+				filteredKeywords = append(filteredKeywords, keyword)
+			}
+		}
+	}
+
+	return filteredKeywords
+}
+
 // saveProcessedSitemaps saves URL hashes for all processed sitemaps
 func (sm *SitemapMonitor) saveProcessedSitemaps(ctx context.Context, results []*MonitorResult) {
 	for _, result := range results {
@@ -1039,19 +1228,26 @@ func (sm *SitemapMonitor) Close() error {
 		fn()
 	}
 	
-	// Close all resources with panic protection
+	// Close all resources with panic protection in dependency order
+	safeClose("worker pool", func() error {
+		if sm.workerPool != nil {
+			return sm.workerPool.Stop()
+		}
+		return nil
+	})
+
 	safeClose("rate limiter pool", func() error {
 		return sm.rateLimiterPool.Close()
 	})
-	
+
 	safeCloseNoError("main rate limiter", func() {
 		sm.rateLimiter.Close()
 	})
-	
+
 	safeCloseNoError("submission pool", func() {
 		sm.submissionPool.Stop()
 	})
-	
+
 	// Note: Simple retry processor doesn't need cleanup as it's fire-and-forget
 	
 	// Return combined error if any occurred
@@ -1070,8 +1266,8 @@ func (sm *SitemapMonitor) Close() error {
 func (sm *SitemapMonitor) processBatchWorker(ctx context.Context, workerID int, batchChan <-chan []string, resultChan chan<- batchResult, keywordToSpecificURLMap map[string]string, wg *sync.WaitGroup) {
 	defer wg.Done()
 	
-	sm.log.WithField("worker_id", workerID).Debug("Starting batch worker")
-	
+	// Removed worker startup debug logging for cleaner output
+
 	for batch := range batchChan {
 		// Check context cancellation
 		select {
@@ -1080,15 +1276,18 @@ func (sm *SitemapMonitor) processBatchWorker(ctx context.Context, workerID int, 
 			return
 		default:
 		}
+
+		// Removed batch processing debug logging for cleaner output
 		
-		sm.log.WithFields(map[string]interface{}{
-			"worker_id":  workerID,
-			"batch_size": len(batch),
-		}).Debug("Processing batch")
-		
-		// Query API with rate limiting
+		// Query API with API-endpoint-aware rate limiting for optimal dual API utilization
 		var trendData *api.APIResponse
-		err := sm.apiExecutor.Execute(ctx, func() error {
+		config := sm.concurrencyManager.GetCurrentConfig()
+
+		// Get API endpoint for proper rate limiting
+		apiEndpoint := sm.getAPIEndpointForRateLimiting()
+		workerRateLimiter := sm.rateLimiterPool.GetOrCreateForAPI(apiEndpoint, config.APIRequestsPerSecond)
+
+		err := workerRateLimiter.Execute(ctx, func() error {
 			var queryErr error
 			trendData, queryErr = sm.apiClient.Query(ctx, batch)
 			return queryErr
@@ -1107,20 +1306,11 @@ func (sm *SitemapMonitor) processBatchWorker(ctx context.Context, workerID int, 
 				"batch_size": len(batch),
 				"error":      err.Error(),
 			}).Warn("Batch query failed")
-		} else {
-			resultCount := 0
-			if trendData != nil {
-				resultCount = len(trendData.Keywords)
-			}
-			sm.log.WithFields(map[string]interface{}{
-				"worker_id":     workerID,
-				"batch_size":    len(batch),
-				"result_count":  resultCount,
-			}).Debug("Batch query successful")
 		}
+		// Removed successful batch logging for cleaner output
 	}
-	
-	sm.log.WithField("worker_id", workerID).Debug("Batch worker completed")
+
+	// Removed worker completion debug logging for cleaner output
 }
 
 // Helper function to parse URL
@@ -1132,4 +1322,50 @@ func parseURL(urlStr string) (*url.URL, error) {
 func (sm *SitemapMonitor) ExportDataSummary(ctx context.Context, outputDir string) error {
 	exporter := storage.NewDataExporter(sm.storage)
 	return exporter.ExportReport(ctx, outputDir)
+}
+
+// configureAtomicConcurrencyControl sets up atomic concurrency control for API clients
+// Inspired by 1.js distributed lock mechanism for precise concurrent request management
+func (sm *SitemapMonitor) configureAtomicConcurrencyControl(apiURL string) {
+	// Get current concurrency configuration
+	config := sm.concurrencyManager.GetCurrentConfig()
+	_ = config // Use config if needed for dynamic adjustment
+
+	// Create atomic limiter for primary API endpoint using configuration
+	primaryLimiter := sm.rateLimiterPool.GetOrCreateAtomicLimiter(
+		apiURL, config.MaxConcurrentPerAPI, config.ConcurrencyTimeout)
+
+	// Configure API client with atomic concurrency control
+	if configurable, ok := sm.apiClient.(api.ConcurrencyConfigurable); ok {
+		adapter := NewAtomicLimiterAdapter(primaryLimiter)
+		configurable.SetConcurrencyLimiter(adapter)
+
+		sm.log.WithFields(map[string]interface{}{
+			"api_endpoint":     sm.maskAPIEndpoint(apiURL),
+			"max_concurrent":   config.MaxConcurrentPerAPI,
+			"acquire_timeout":  config.ConcurrencyTimeout,
+		}).Info("Atomic concurrency control configured for API client")
+	} else {
+		sm.log.Warn("API client does not support concurrency configuration")
+	}
+
+	// If secondary API is configured, set up its concurrency control too
+	if secondaryURL := os.Getenv("TRENDS_API_URL_SECONDARY"); secondaryURL != "" && secondaryURL != apiURL {
+		_ = sm.rateLimiterPool.GetOrCreateAtomicLimiter(
+			secondaryURL, config.MaxConcurrentPerAPI, config.ConcurrencyTimeout)
+
+		sm.log.WithFields(map[string]interface{}{
+			"secondary_api_endpoint": sm.maskAPIEndpoint(secondaryURL),
+			"max_concurrent":         config.MaxConcurrentPerAPI,
+			"acquire_timeout":        config.ConcurrencyTimeout,
+		}).Info("Secondary API atomic concurrency control configured")
+	}
+}
+
+// maskAPIEndpoint masks API endpoint for secure logging
+func (sm *SitemapMonitor) maskAPIEndpoint(endpoint string) string {
+	if len(endpoint) > 20 {
+		return endpoint[:10] + "***" + endpoint[len(endpoint)-7:]
+	}
+	return "***"
 }

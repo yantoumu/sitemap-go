@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"os"
 	"sync"
 )
 
@@ -14,8 +15,16 @@ func GetLogger() *Logger {
 	once.Do(func() {
 		// Initialize with default config if not already set
 		if globalLogger == nil {
+			// Use production-friendly log level by default
+			defaultLevel := "warn"  // Changed from "info" to "warn" for production
+			if os.Getenv("DEBUG") == "true" {
+				defaultLevel = "debug"
+			} else if os.Getenv("LOG_LEVEL") != "" {
+				defaultLevel = os.Getenv("LOG_LEVEL")
+			}
+
 			globalLogger = New(Config{
-				Level:      "info",
+				Level:      defaultLevel,
 				Format:     "json",
 				Output:     "stdout",
 				TimeFormat: "",

@@ -2,11 +2,10 @@ package storage
 
 import (
 	"context"
-	"crypto/md5"
-	"fmt"
 	"time"
 
 	"sitemap-go/pkg/logger"
+	"sitemap-go/pkg/utils"
 )
 
 // SimpleTracker只保存URL哈希和失败关键词
@@ -43,8 +42,8 @@ type FailedKeywordRecord struct {
 
 // SaveProcessedURL saves URL hash to avoid duplicate processing
 func (st *SimpleTracker) SaveProcessedURL(ctx context.Context, sitemapURL string, keywords []string) error {
-	urlHash := st.calculateURLHash(sitemapURL, keywords)
-	
+	urlHash := utils.CalculateURLHash(sitemapURL)
+
 	record := URLHashRecord{
 		URLHash:     urlHash,
 		SitemapURL:  sitemapURL,
@@ -75,9 +74,9 @@ func (st *SimpleTracker) SaveProcessedURL(ctx context.Context, sitemapURL string
 	return st.storage.Save(ctx, "processed_urls", existingHashes)
 }
 
-// IsURLProcessed checks if URL+keywords combination was already processed
-func (st *SimpleTracker) IsURLProcessed(ctx context.Context, sitemapURL string, keywords []string) (bool, error) {
-	urlHash := st.calculateURLHash(sitemapURL, keywords)
+// IsURLProcessed checks if URL was already processed
+func (st *SimpleTracker) IsURLProcessed(ctx context.Context, sitemapURL string) (bool, error) {
+	urlHash := utils.CalculateURLHash(sitemapURL)
 	
 	var existingHashes []URLHashRecord
 	err := st.storage.Load(ctx, "processed_urls", &existingHashes)
@@ -205,12 +204,7 @@ func (st *SimpleTracker) RemoveSuccessfulKeywords(ctx context.Context, successfu
 	return st.storage.Save(ctx, "failed_keywords", remaining)
 }
 
-// calculateURLHash generates a hash for URL and keywords combination
-func (st *SimpleTracker) calculateURLHash(sitemapURL string, keywords []string) string {
-	data := fmt.Sprintf("%s:%v", sitemapURL, keywords)
-	hash := md5.Sum([]byte(data))
-	return fmt.Sprintf("%x", hash)
-}
+
 
 // calculateNextRetryTime calculates when to retry based on attempt count
 func (st *SimpleTracker) calculateNextRetryTime(retryCount int) time.Time {

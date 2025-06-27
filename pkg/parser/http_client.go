@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/valyala/fasthttp"
+	"sitemap-go/pkg/logger"
 )
 
 // HTTPClient provides a shared fasthttp client with browser-like headers
 type HTTPClient struct {
 	client     *fasthttp.Client
 	userAgents []string
+	secureLog  *logger.SecurityLogger
 }
 
 // NewHTTPClient creates a new HTTP client for sitemap parsing
@@ -32,6 +34,7 @@ func NewHTTPClient() *HTTPClient {
 			"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
 			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0",
 		},
+		secureLog: logger.GetSecurityLogger(),
 	}
 }
 
@@ -45,12 +48,12 @@ func (h *HTTPClient) Download(ctx context.Context, targetURL string) (io.ReadClo
 	
 	// Check if URL has scheme
 	if parsedURL.Scheme == "" {
-		return nil, fmt.Errorf("URL missing scheme (http/https): %s", targetURL)
+		return nil, fmt.Errorf("URL missing scheme (http/https): %s", h.secureLog.MaskURL(targetURL))
 	}
-	
+
 	// Check if URL has host
 	if parsedURL.Host == "" {
-		return nil, fmt.Errorf("URL missing host: %s", targetURL)
+		return nil, fmt.Errorf("URL missing host: %s", h.secureLog.MaskURL(targetURL))
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -108,9 +111,9 @@ func (h *HTTPClient) setRequestHeaders(req *fasthttp.Request, targetURL string) 
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
 	
-	// Add referrer based on domain
+	// Add referrer based on domain - with safe URL parsing
 	parsedURL, err := url.Parse(targetURL)
-	if err == nil {
+	if err == nil && parsedURL != nil && parsedURL.Scheme != "" && parsedURL.Host != "" {
 		req.Header.Set("Referer", fmt.Sprintf("%s://%s/", parsedURL.Scheme, parsedURL.Host))
 	}
 	

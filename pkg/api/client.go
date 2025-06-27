@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -20,12 +19,22 @@ type httpAPIClient struct {
 	connManager     *ConnectionManager
 	retry           *SimpleRetry
 	log             *logger.Logger
-	
+
+	// Atomic concurrency control (inspired by 1.js)
+	concurrencyLimiter ConcurrencyLimiter
+
 	// Metrics
 	totalRequests uint64
 	failedRequests uint64
 	totalLatency  uint64
 	lastError     atomic.Value
+}
+
+// ConcurrencyLimiter interface for atomic concurrency control
+// Allows different implementations (atomic, distributed, etc.)
+type ConcurrencyLimiter interface {
+	Acquire(ctx context.Context) error
+	Release()
 }
 
 func NewHTTPAPIClient(baseURL, apiKey string) APIClient {
@@ -36,13 +45,29 @@ func NewHTTPAPIClient(baseURL, apiKey string) APIClient {
 // Supports single URL or comma-separated multiple URLs for load balancing
 func NewHTTPAPIClientWithConfig(baseURL, apiKey string, connConfig ConnectionConfig) APIClient {
 	urlPool := NewURLPool(baseURL) // Create URL pool from single or multiple URLs
-	
+
 	return &httpAPIClient{
 		urlPool:         urlPool,
 		apiKey:          apiKey,
 		connManager:     NewConnectionManager(connConfig),
 		retry:           NewSimpleRetry(3, 1*time.Second), // 3 retries with 1s initial delay
 		log:             logger.GetLogger().WithField("component", "api_client"),
+		concurrencyLimiter: nil, // Will be set by monitor when needed
+	}
+}
+
+// NewHTTPAPIClientWithConcurrency creates client with atomic concurrency control
+// This enables precise concurrent request management similar to 1.js implementation
+func NewHTTPAPIClientWithConcurrency(baseURL, apiKey string, connConfig ConnectionConfig, limiter ConcurrencyLimiter) APIClient {
+	urlPool := NewURLPool(baseURL)
+
+	return &httpAPIClient{
+		urlPool:            urlPool,
+		apiKey:             apiKey,
+		connManager:        NewConnectionManager(connConfig),
+		retry:              NewSimpleRetry(3, 1*time.Second),
+		log:                logger.GetLogger().WithField("component", "api_client_concurrent"),
+		concurrencyLimiter: limiter,
 	}
 }
 
@@ -89,12 +114,20 @@ func (c *httpAPIClient) Query(ctx context.Context, keywords []string) (*APIRespo
 
 
 func (c *httpAPIClient) doQuery(ctx context.Context, keywords []string, result **APIResponse) error {
+	// Acquire concurrency permit if limiter is configured (inspired by 1.js)
+	if c.concurrencyLimiter != nil {
+		if err := c.concurrencyLimiter.Acquire(ctx); err != nil {
+			return fmt.Errorf("failed to acquire concurrency permit: %w", err)
+		}
+		defer c.concurrencyLimiter.Release() // Ensure permit is always released
+	}
+
 	// Create fasthttp request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
-	
+
 	// Set request properties - use next URL from pool for load balancing
 	baseURL := c.urlPool.Next()
 	if baseURL == "" {
@@ -130,8 +163,15 @@ func (c *httpAPIClient) doQuery(ctx context.Context, keywords []string, result *
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	
-	// Execute request using connection manager
-	err := c.connManager.GetFastHTTPClient().DoTimeout(req, resp, 80*time.Second)
+	// Execute request using connection manager with configurable timeout
+	// Default to 80 seconds for SEOKey API as per user preference
+	timeout := 80 * time.Second
+	if envTimeout := os.Getenv("API_TIMEOUT"); envTimeout != "" {
+		if parsedTimeout, parseErr := time.ParseDuration(envTimeout); parseErr == nil {
+			timeout = parsedTimeout
+		}
+	}
+	err := c.connManager.GetFastHTTPClient().DoTimeout(req, resp, timeout)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -151,49 +191,23 @@ func (c *httpAPIClient) doQuery(ctx context.Context, keywords []string, result *
 		return fmt.Errorf("API returned status %d (response body hidden for security)", resp.StatusCode())
 	}
 	
-	// Parse seokey API response format
-	var seokeyResp struct {
-		Status string `json:"status"`
-		Data   []struct {
-			Keyword string `json:"keyword"`
-			Metrics struct {
-				AvgMonthlySearches int `json:"avg_monthly_searches"`
-				Competition        string `json:"competition"`
-				LatestSearches     int `json:"latest_searches"`
-			} `json:"metrics"`
-		} `json:"data"`
+	// Use unified SEOKey parser for consistent response handling
+	parser := NewSEOKeyParser()
+	apiResp, err := parser.ParseResponse(resp.Body())
+	if err != nil {
+		return fmt.Errorf("failed to parse SEOKey response: %w", err)
 	}
-	
-	if err := json.Unmarshal(resp.Body(), &seokeyResp); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
-	}
-	
-	// Convert to APIResponse format (handle multiple keywords)
-	var apiResp APIResponse
-	if seokeyResp.Status == "success" && len(seokeyResp.Data) > 0 {
-		apiResp.Keywords = make([]Keyword, 0, len(seokeyResp.Data))
-		
-		for _, data := range seokeyResp.Data {
-			// Map competition string to numeric value
-			competitionValue := 0.5 // Default medium
-			switch data.Metrics.Competition {
-			case "LOW":
-				competitionValue = 0.3
-			case "HIGH":
-				competitionValue = 0.8
-			}
-			
-			apiResp.Keywords = append(apiResp.Keywords, Keyword{
-				Word:         data.Keyword,
-				SearchVolume: data.Metrics.AvgMonthlySearches,
-				Competition:  competitionValue,
-				CPC:          0, // SEOKey API doesn't provide CPC
-			})
-		}
-	}
-	
-	*result = &apiResp
+
+	*result = apiResp
 	return nil
+}
+
+// SetConcurrencyLimiter sets the concurrency limiter for this client
+// Allows dynamic configuration of concurrency control
+// Implements ConcurrencyConfigurable interface
+func (c *httpAPIClient) SetConcurrencyLimiter(limiter ConcurrencyLimiter) {
+	c.concurrencyLimiter = limiter
+	c.log.Info("Concurrency limiter configured for API client")
 }
 
 

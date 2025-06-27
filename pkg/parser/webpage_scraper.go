@@ -15,6 +15,7 @@ import (
 type WebpageScraper struct {
 	httpClient DownloadClient
 	log        *logger.Logger
+	secureLog  *logger.SecurityLogger
 	maxURLs    int
 }
 
@@ -23,6 +24,7 @@ func NewWebpageScraper() *WebpageScraper {
 	return &WebpageScraper{
 		httpClient: NewResilientHTTPClient(),
 		log:        logger.GetLogger().WithField("component", "webpage_scraper"),
+		secureLog:  logger.GetSecurityLogger(),
 		maxURLs:    1000, // Limit to prevent excessive scraping
 	}
 }
@@ -52,20 +54,19 @@ func (w *WebpageScraper) ScrapeGameURLs(ctx context.Context, baseURL string) ([]
 		}
 		visitedPages[pageURL] = true
 		
-		w.log.WithField("page_url", pageURL).Debug("Scraping game page")
-		
+		w.secureLog.DebugWithURL("Scraping game page", pageURL, nil)
+
 		urls, err := w.scrapeGameLinksFromPage(ctx, pageURL, parsedBase)
 		if err != nil {
-			w.log.WithError(err).WithField("page_url", pageURL).Debug("Failed to scrape page")
+			w.secureLog.ErrorWithURL("Failed to scrape page", pageURL, err, nil)
 			continue
 		}
-		
+
 		allURLs = append(allURLs, urls...)
-		w.log.WithFields(map[string]interface{}{
-			"page_url":    pageURL,
+		w.secureLog.DebugWithURL("Scraped URLs from page", pageURL, map[string]interface{}{
 			"urls_found":  len(urls),
 			"total_urls":  len(allURLs),
-		}).Debug("Scraped URLs from page")
+		})
 	}
 	
 	// Remove duplicates

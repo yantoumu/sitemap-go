@@ -96,13 +96,35 @@ func DefaultPoolConfig() PoolConfig {
 // HighThroughputConfig returns configuration optimized for high throughput
 func HighThroughputConfig() PoolConfig {
 	numCPU := runtime.NumCPU()
+
+	// Adaptive queue size based on available memory
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	// Calculate reasonable queue size based on available memory (max 10MB for queue)
+	maxQueueSize := int(memStats.Sys / (1024 * 1024)) // 1 task per MB of system memory
+	if maxQueueSize > 50000 {
+		maxQueueSize = 50000 // Cap at original max
+	}
+	if maxQueueSize < 1000 {
+		maxQueueSize = 1000 // Minimum reasonable size
+	}
+
+	bufferSize := maxQueueSize / 10 // Buffer is 10% of queue size
+	if bufferSize > 5000 {
+		bufferSize = 5000
+	}
+	if bufferSize < 100 {
+		bufferSize = 100
+	}
+
 	return PoolConfig{
 		Workers:       numCPU * 2, // 2x CPU cores for I/O bound tasks
-		MaxQueueSize:  50000,
+		MaxQueueSize:  maxQueueSize,
 		BatchSize:     20,
 		AdaptiveBatch: true,
 		TaskTimeout:   15 * time.Second,
-		BufferSize:    5000,
+		BufferSize:    bufferSize,
 	}
 }
 
@@ -311,7 +333,7 @@ func (p *ConcurrentPool) processTask(workerID int, task Task) {
 		// Result sent successfully
 	case <-p.ctx.Done():
 		// Pool shutting down, safely drop result
-		p.log.WithField("task_id", taskID).Debug("Result dropped - pool shutting down")
+		// Removed debug logging for cleaner output
 	default:
 		// Result queue is full, log and continue
 		p.log.WithField("task_id", taskID).Warn("Result queue full, dropping result")
@@ -323,16 +345,16 @@ func (p *ConcurrentPool) processTask(workerID int, task Task) {
 
 // resultCollector handles result processing
 func (p *ConcurrentPool) resultCollector() {
-	p.log.Debug("Result collector started")
-	
+	// Removed debug logging for cleaner output
+
 	for result := range p.resultQueue {
-		// Log result if needed
+		// Only log errors, not debug info
 		if result.Error != nil {
-			p.log.WithField("task_id", result.TaskID).WithError(result.Error).Debug("Task failed")
+			p.log.WithField("task_id", result.TaskID).WithError(result.Error).Error("Task failed")
 		}
 	}
-	
-	p.log.Debug("Result collector stopped")
+
+	// Removed debug logging for cleaner output
 }
 
 // PoolMetrics represents worker pool performance metrics

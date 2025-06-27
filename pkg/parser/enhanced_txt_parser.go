@@ -17,6 +17,7 @@ type EnhancedTXTParser struct {
 	httpClient      DownloadClient
 	filters         []Filter
 	log             *logger.Logger
+	secureLog       *logger.SecurityLogger
 	maxLines        int
 	maxLineLength   int
 	acceptHTMLType  bool // Accept text/html content-type
@@ -28,6 +29,7 @@ func NewEnhancedTXTParser() *EnhancedTXTParser {
 		httpClient:     NewResilientHTTPClient(), // Use resilient client
 		filters:        make([]Filter, 0),
 		log:            logger.GetLogger().WithField("component", "enhanced_txt_parser"),
+		secureLog:      logger.GetSecurityLogger(),
 		maxLines:       100000, // Increased limit
 		maxLineLength:  4096,   // Increased line length
 		acceptHTMLType: true,   // Accept text/html responses
@@ -91,13 +93,15 @@ func (p *EnhancedTXTParser) parseContent(rawBytes []byte) ([]URL, error) {
 		if p.isValidURL(line) {
 			parsedURL, err := url.Parse(line)
 			if err != nil {
-				p.log.WithError(err).WithField("line", line).Debug("Failed to parse URL")
+				p.secureLog.DebugWithURL("Failed to parse URL", line, map[string]interface{}{
+					"error": err.Error(),
+				})
 				continue
 			}
-			
+
 			// Apply filters
 			if p.shouldExclude(parsedURL) {
-				p.log.WithField("url", line).Debug("URL excluded by filter")
+				p.secureLog.DebugWithURL("URL excluded by filter", line, nil)
 				continue
 			}
 			
@@ -127,35 +131,11 @@ func (p *EnhancedTXTParser) parseContent(rawBytes []byte) ([]URL, error) {
 	return urls, nil
 }
 
-// isValidURL performs comprehensive URL validation
+// isValidURL performs comprehensive URL validation using common utilities
 func (p *EnhancedTXTParser) isValidURL(urlStr string) bool {
-	// Basic checks
-	if urlStr == "" || len(urlStr) > 2048 {
-		return false
-	}
-	
-	// Must start with http:// or https://
-	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
-		return false
-	}
-	
-	// Check for spaces or invalid characters
-	if strings.ContainsAny(urlStr, " \t\n\r") {
-		return false
-	}
-	
-	// Try to parse
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return false
-	}
-	
-	// Must have a host
-	if parsedURL.Host == "" {
-		return false
-	}
-	
-	return true
+	// Use common URL validation logic
+	utils := NewCommonParserUtils()
+	return utils.URLValidator().IsValidURL(urlStr)
 }
 
 // SupportedFormats returns the formats supported by this parser

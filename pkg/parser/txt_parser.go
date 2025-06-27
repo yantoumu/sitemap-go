@@ -18,6 +18,7 @@ type TXTParser struct {
 	log             *logger.Logger
 	maxLines        int
 	maxLineLength   int
+	utils           *CommonParserUtils // Add common utilities
 }
 
 func NewTXTParser() *TXTParser {
@@ -27,6 +28,7 @@ func NewTXTParser() *TXTParser {
 		log:           logger.GetLogger().WithField("component", "txt_parser"),
 		maxLines:      50000,  // Limit to prevent memory issues
 		maxLineLength: 2048,   // Limit line length
+		utils:         NewCommonParserUtils(), // Initialize common utilities
 	}
 }
 
@@ -138,12 +140,12 @@ func (p *TXTParser) downloadTXT(ctx context.Context, txtURL string) (io.ReadClos
 }
 
 func (p *TXTParser) processURL(urlStr string) (*URL, error) {
-	// Basic URL validation
-	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
-		return nil, fmt.Errorf("invalid URL scheme")
+	// Use common URL validation
+	if err := p.utils.URLValidator().ValidateURL(urlStr); err != nil {
+		return nil, err
 	}
 
-	// Parse URL
+	// Parse URL (we know it's valid now)
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse URL: %w", err)

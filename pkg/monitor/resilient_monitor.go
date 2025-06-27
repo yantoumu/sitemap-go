@@ -88,9 +88,10 @@ func (rm *ResilientSitemapMonitor) ProcessSitemap(ctx context.Context, sitemapUR
 	}
 	
 	// Extract keywords using enhanced extractor
+	// Note: Removed local deduplication to avoid duplicate processing
+	// Global deduplication will be handled at higher level
 	var keywords []string
-	keywordMap := make(map[string]bool)
-	
+
 	for _, parsedURL := range urls {
 		// First try to extract from the URL itself
 		urlKeywords, err := rm.keywordExtractor.Extract(parsedURL.Address)
@@ -98,12 +99,11 @@ func (rm *ResilientSitemapMonitor) ProcessSitemap(ctx context.Context, sitemapUR
 			rm.log.WithError(err).WithField("url", parsedURL.Address).Debug("Failed to extract keywords")
 			continue
 		}
-		
-		// Select primary keyword (longest) if multiple found
+
+		// Select primary keyword if multiple found
 		if len(urlKeywords) > 0 {
 			primaryKeyword := rm.selectPrimaryKeyword(urlKeywords)
-			if !keywordMap[primaryKeyword] {
-				keywordMap[primaryKeyword] = true
+			if primaryKeyword != "" {
 				keywords = append(keywords, primaryKeyword)
 			}
 		}
@@ -142,21 +142,62 @@ func (rm *ResilientSitemapMonitor) ProcessSitemap(ctx context.Context, sitemapUR
 	return result, nil
 }
 
-// selectPrimaryKeyword selects the most relevant keyword
+// selectPrimaryKeyword selects the most relevant keyword using improved scoring
 func (rm *ResilientSitemapMonitor) selectPrimaryKeyword(keywords []string) string {
 	if len(keywords) == 0 {
 		return ""
 	}
-	
-	// Select the longest keyword as it's likely most specific
-	longest := keywords[0]
-	for _, kw := range keywords[1:] {
-		if len(kw) > len(longest) {
-			longest = kw
+	if len(keywords) == 1 {
+		return keywords[0]
+	}
+
+	// Use improved scoring algorithm
+	bestKeyword := keywords[0]
+	bestScore := rm.scoreKeyword(bestKeyword)
+
+	for _, keyword := range keywords[1:] {
+		score := rm.scoreKeyword(keyword)
+		if score > bestScore {
+			bestScore = score
+			bestKeyword = keyword
 		}
 	}
-	
-	return longest
+
+	return bestKeyword
+}
+
+// scoreKeyword calculates a score for keyword selection (same logic as SitemapMonitor)
+func (rm *ResilientSitemapMonitor) scoreKeyword(keyword string) float64 {
+	if keyword == "" {
+		return 0
+	}
+
+	score := float64(len(keyword)) // Base score from length
+
+	// Bonus for game-related terms
+	gameTerms := []string{"game", "play", "puzzle", "action", "adventure", "strategy", "arcade"}
+	for _, term := range gameTerms {
+		if strings.Contains(strings.ToLower(keyword), term) {
+			score += 10 // Significant bonus for game terms
+			break
+		}
+	}
+
+	// Penalty for common generic terms
+	genericTerms := []string{"index", "page", "home", "main", "default"}
+	for _, term := range genericTerms {
+		if strings.ToLower(keyword) == term {
+			score -= 5 // Penalty for generic terms
+			break
+		}
+	}
+
+	// Bonus for keywords with meaningful separators
+	if strings.Contains(keyword, "-") || strings.Contains(keyword, "_") {
+		score += 3
+	}
+
+	return score
 }
 
 // storeResults saves the monitoring results

@@ -334,25 +334,10 @@ func (f *ResilientParserFactory) isNonRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
-	errorStr := strings.ToLower(err.Error())
-	
-	// These errors are unlikely to be resolved by different parsing strategies
-	nonRetryablePatterns := []string{
-		"invalid url",
-		"unsupported protocol",
-		"no such host",
-		"connection refused",
-		"network unreachable",
-	}
-	
-	for _, pattern := range nonRetryablePatterns {
-		if strings.Contains(errorStr, pattern) {
-			return true
-		}
-	}
-	
-	return false
+
+	// Use common error classification
+	utils := NewCommonParserUtils()
+	return !utils.ErrorClassifier().IsRetryableError(err)
 }
 
 // GetAvailableStrategies returns all available parsing strategies

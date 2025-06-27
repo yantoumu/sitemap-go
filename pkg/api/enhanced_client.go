@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -143,8 +144,15 @@ func (c *EnhancedHTTPAPIClient) doQueryWithHealthTracking(ctx context.Context, k
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
-	// Execute request
-	err := c.connManager.GetFastHTTPClient().DoTimeout(req, resp, 80*time.Second)
+	// Execute request with configurable timeout
+	// Default to 80 seconds for SEOKey API as per user preference
+	timeout := 80 * time.Second
+	if envTimeout := os.Getenv("API_TIMEOUT"); envTimeout != "" {
+		if parsedTimeout, parseErr := time.ParseDuration(envTimeout); parseErr == nil {
+			timeout = parsedTimeout
+		}
+	}
+	err := c.connManager.GetFastHTTPClient().DoTimeout(req, resp, timeout)
 	if err != nil {
 		return fmt.Errorf("request failed for URL %s: %w", c.maskURL(baseURL), err)
 	}
@@ -165,49 +173,16 @@ func (c *EnhancedHTTPAPIClient) doQueryWithHealthTracking(ctx context.Context, k
 	return c.parseResponse(resp.Body(), result)
 }
 
-// parseResponse handles API response parsing (extracted for maintainability)
+// parseResponse handles API response parsing using unified SEOKey parser
 func (c *EnhancedHTTPAPIClient) parseResponse(body []byte, result **APIResponse) error {
-	// Reuse existing SEOKey parsing logic from original client
-	var seokeyResp struct {
-		Status string `json:"status"`
-		Data   []struct {
-			Keyword string `json:"keyword"`
-			Metrics struct {
-				AvgMonthlySearches int    `json:"avg_monthly_searches"`
-				Competition        string `json:"competition"`
-				LatestSearches     int    `json:"latest_searches"`
-			} `json:"metrics"`
-		} `json:"data"`
+	// Use unified SEOKey parser for consistent response handling
+	parser := NewSEOKeyParser()
+	apiResp, err := parser.ParseResponse(body)
+	if err != nil {
+		return fmt.Errorf("failed to parse SEOKey response: %w", err)
 	}
 
-	if err := parseJSON(body, &seokeyResp); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	// Convert to APIResponse format
-	var apiResp APIResponse
-	if seokeyResp.Status == "success" && len(seokeyResp.Data) > 0 {
-		apiResp.Keywords = make([]Keyword, 0, len(seokeyResp.Data))
-
-		for _, data := range seokeyResp.Data {
-			competitionValue := 0.5 // Default
-			switch data.Metrics.Competition {
-			case "LOW":
-				competitionValue = 0.3
-			case "HIGH":
-				competitionValue = 0.8
-			}
-
-			apiResp.Keywords = append(apiResp.Keywords, Keyword{
-				Word:         data.Keyword,
-				SearchVolume: data.Metrics.AvgMonthlySearches,
-				Competition:  competitionValue,
-				CPC:          0,
-			})
-		}
-	}
-
-	*result = &apiResp
+	*result = apiResp
 	return nil
 }
 
@@ -259,8 +234,3 @@ func max(a, b uint64) uint64 {
 	return b
 }
 
-// Placeholder for JSON parsing (would use encoding/json in real implementation)
-func parseJSON(data []byte, v interface{}) error {
-	// This is a placeholder - in real implementation, use encoding/json.Unmarshal
-	return fmt.Errorf("JSON parsing not implemented in this example")
-}
