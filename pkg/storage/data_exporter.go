@@ -50,26 +50,31 @@ func (de *DataExporter) ExportReport(ctx context.Context, outputDir string) erro
 
 // exportProcessedURLs exports processed URLs summary
 func (de *DataExporter) exportProcessedURLs(ctx context.Context, outputDir string) error {
-	var records []URLHashRecord
-	err := de.storage.Load(ctx, "processed_urls", &records)
-	if err != nil {
-		// If no data exists, create empty file
-		records = []URLHashRecord{}
+	var processedSet ProcessedURLSet
+	err := de.storage.Load(ctx, "processed_urls", &processedSet)
+	if err != nil || processedSet == nil {
+		// If no data exists, create empty set
+		processedSet = make(ProcessedURLSet)
 	}
 	
-	// Create summary
+	// Create summary (极简版本)
 	summary := map[string]interface{}{
-		"total_processed": len(records),
+		"total_processed": len(processedSet),
 		"export_time":     time.Now().Format(time.RFC3339),
-		"latest_10":       []URLHashRecord{},
+		"sample_hashes":   []string{}, // 只显示样本哈希
 	}
 	
-	// Get latest 10 records
-	if len(records) > 10 {
-		summary["latest_10"] = records[len(records)-10:]
-	} else {
-		summary["latest_10"] = records
+	// Get sample hashes (前10个)
+	sampleHashes := make([]string, 0, 10)
+	count := 0
+	for hash := range processedSet {
+		if count >= 10 {
+			break
+		}
+		sampleHashes = append(sampleHashes, hash[:8]+"...") // 只显示前8位
+		count++
 	}
+	summary["sample_hashes"] = sampleHashes
 	
 	// Save to file
 	data, err := json.MarshalIndent(summary, "", "  ")
@@ -127,17 +132,22 @@ func (de *DataExporter) exportFailedKeywords(ctx context.Context, outputDir stri
 
 // createSummary creates an overall summary file
 func (de *DataExporter) createSummary(ctx context.Context, outputDir string) error {
-	// Load all data
-	var processedURLs []URLHashRecord
+	// Load all data (极简版本)
+	var processedSet ProcessedURLSet
 	var failedKeywords []FailedKeywordRecord
 	
-	_ = de.storage.Load(ctx, "processed_urls", &processedURLs)
+	_ = de.storage.Load(ctx, "processed_urls", &processedSet)
 	_ = de.storage.Load(ctx, "failed_keywords", &failedKeywords)
+	
+	processedCount := 0
+	if processedSet != nil {
+		processedCount = len(processedSet)
+	}
 	
 	// Create summary
 	summary := map[string]interface{}{
 		"report_time":        time.Now().Format(time.RFC3339),
-		"total_processed":    len(processedURLs),
+		"total_processed":    processedCount,
 		"total_failed":       len(failedKeywords),
 		"success_rate":       0.0,
 		"data_directory":     "./data",
@@ -148,9 +158,9 @@ func (de *DataExporter) createSummary(ctx context.Context, outputDir string) err
 	}
 	
 	// Calculate success rate
-	total := len(processedURLs) + len(failedKeywords)
+	total := processedCount + len(failedKeywords)
 	if total > 0 {
-		summary["success_rate"] = float64(len(processedURLs)) / float64(total) * 100
+		summary["success_rate"] = float64(processedCount) / float64(total) * 100
 	}
 	
 	// Save to file

@@ -2,7 +2,6 @@ package detector
 
 import (
 	"context"
-	"crypto/md5"
 	"fmt"
 	"sort"
 	"time"
@@ -10,6 +9,7 @@ import (
 	"sitemap-go/pkg/logger"
 	"sitemap-go/pkg/parser"
 	"sitemap-go/pkg/storage"
+	"sitemap-go/pkg/utils"
 )
 
 // URLHistoryManager implements HistoryManager for URL snapshots
@@ -152,10 +152,9 @@ func (h *URLHistoryManager) calculateChecksum(urls []parser.URL) string {
 	// Sort for consistent checksum
 	sort.Strings(urlStrings)
 	
-	// Calculate MD5 hash
+	// Calculate hash using unified utility
 	data := fmt.Sprintf("%v", urlStrings)
-	hash := md5.Sum([]byte(data))
-	return fmt.Sprintf("%x", hash)
+	return utils.CalculateURLHash(data)
 }
 
 // GetSnapshotByTime retrieves a snapshot closest to the specified time

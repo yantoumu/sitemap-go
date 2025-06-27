@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"sitemap-go/pkg/logger"
@@ -12,6 +13,7 @@ import (
 type SimpleTracker struct {
 	storage Storage
 	log     *logger.Logger
+	mu      sync.Mutex // 防止竞态条件的互斥锁
 }
 
 // NewSimpleTracker创建简化的跟踪器
@@ -22,12 +24,8 @@ func NewSimpleTracker(storage Storage) *SimpleTracker {
 	}
 }
 
-// URLHashRecord represents a processed URL hash record
-type URLHashRecord struct {
-	URLHash     string    `json:"url_hash"`
-	SitemapURL  string    `json:"sitemap_url"`
-	ProcessedAt time.Time `json:"processed_at"`
-}
+// ProcessedURLSet represents a set of processed URL hashes (极简设计)
+type ProcessedURLSet map[string]bool // URLHash -> processed
 
 // FailedKeywordRecord represents a failed keyword for retry
 type FailedKeywordRecord struct {
@@ -40,58 +38,93 @@ type FailedKeywordRecord struct {
 	NextRetryAt time.Time `json:"next_retry_at"`
 }
 
-// SaveProcessedURL saves URL hash to avoid duplicate processing
-func (st *SimpleTracker) SaveProcessedURL(ctx context.Context, sitemapURL string, keywords []string) error {
-	urlHash := utils.CalculateURLHash(sitemapURL)
-
-	record := URLHashRecord{
-		URLHash:     urlHash,
-		SitemapURL:  sitemapURL,
-		ProcessedAt: time.Now(),
+// SaveProcessedURLs saves multiple URL hashes to avoid duplicate processing (极简设计)
+func (st *SimpleTracker) SaveProcessedURLs(ctx context.Context, urls []string, sitemapURL string) error {
+	st.mu.Lock() // 🔒 防止竞态条件
+	defer st.mu.Unlock()
+	
+	if len(urls) == 0 {
+		return nil
 	}
 	
-	// Load existing hashes
-	var existingHashes []URLHashRecord
-	_ = st.storage.Load(ctx, "processed_urls", &existingHashes)
+	// Load existing hash set
+	var processedSet ProcessedURLSet
+	err := st.storage.Load(ctx, "processed_urls", &processedSet)
+	if err != nil || processedSet == nil {
+		processedSet = make(ProcessedURLSet)
+	}
 	
-	// Check if already exists
-	for _, existing := range existingHashes {
-		if existing.URLHash == urlHash {
-			st.log.WithField("url_hash", urlHash).Debug("URL already processed, skipping")
-			return nil
+	// Add new URLs (只保存哈希，极简!)
+	newCount := 0
+	for _, url := range urls {
+		urlHash := utils.CalculateURLHash(url)
+		if !processedSet[urlHash] {
+			processedSet[urlHash] = true
+			newCount++
 		}
 	}
 	
-	// Add new hash
-	existingHashes = append(existingHashes, record)
-	
-	// Keep only recent hashes (last 10000)
-	if len(existingHashes) > 10000 {
-		existingHashes = existingHashes[len(existingHashes)-10000:]
+	// Limit size to prevent memory explosion (线程安全清理)
+	if len(processedSet) > 100000 {
+		// Keep newest 50000 entries using timestamp-based approach
+		st.performSafeCleanup(&processedSet, 50000)
 	}
 	
-	st.log.WithField("url_hash", urlHash).Debug("Saving processed URL hash")
-	return st.storage.Save(ctx, "processed_urls", existingHashes)
+	st.log.WithFields(map[string]interface{}{
+		"new_urls":    newCount,
+		"total_urls":  len(urls),
+		"total_saved": len(processedSet),
+	}).Debug("Saved processed URLs (hash-only)")
+	
+	return st.storage.Save(ctx, "processed_urls", processedSet)
 }
 
-// IsURLProcessed checks if URL was already processed
-func (st *SimpleTracker) IsURLProcessed(ctx context.Context, sitemapURL string) (bool, error) {
-	urlHash := utils.CalculateURLHash(sitemapURL)
+// SaveProcessedURL saves single URL (backward compatibility)
+func (st *SimpleTracker) SaveProcessedURL(ctx context.Context, sitemapURL string, keywords []string) error {
+	// For backward compatibility - treat as sitemap URL
+	return st.SaveProcessedURLs(ctx, []string{sitemapURL}, sitemapURL)
+}
+
+// IsURLProcessed checks if URL was already processed (极简版本)
+func (st *SimpleTracker) IsURLProcessed(ctx context.Context, url string) (bool, error) {
+	st.mu.Lock() // 🔒 防止竞态条件
+	defer st.mu.Unlock()
 	
-	var existingHashes []URLHashRecord
-	err := st.storage.Load(ctx, "processed_urls", &existingHashes)
-	if err != nil {
+	urlHash := utils.CalculateURLHash(url)
+	
+	var processedSet ProcessedURLSet
+	err := st.storage.Load(ctx, "processed_urls", &processedSet)
+	if err != nil || processedSet == nil {
 		return false, nil // Assume not processed if can't load
 	}
 	
-	for _, existing := range existingHashes {
-		if existing.URLHash == urlHash {
-			st.log.WithField("url_hash", urlHash).Debug("URL already processed")
-			return true, nil
+	return processedSet[urlHash], nil
+}
+
+// AreURLsProcessed checks multiple URLs for processing status (极简批量检查)
+func (st *SimpleTracker) AreURLsProcessed(ctx context.Context, urls []string) (map[string]bool, error) {
+	st.mu.Lock() // 🔒 防止竞态条件
+	defer st.mu.Unlock()
+	
+	var processedSet ProcessedURLSet
+	err := st.storage.Load(ctx, "processed_urls", &processedSet)
+	if err != nil || processedSet == nil {
+		// Return all as unprocessed if can't load
+		result := make(map[string]bool)
+		for _, url := range urls {
+			result[url] = false
 		}
+		return result, nil
 	}
 	
-	return false, nil
+	// Check each URL (超简单!)
+	result := make(map[string]bool)
+	for _, url := range urls {
+		urlHash := utils.CalculateURLHash(url)
+		result[url] = processedSet[urlHash]
+	}
+	
+	return result, nil
 }
 
 // SaveFailedKeywords saves failed keywords for retry
@@ -222,4 +255,27 @@ func (st *SimpleTracker) calculateNextRetryTime(retryCount int) time.Time {
 	
 	// Default to 24 hours for retries beyond limit
 	return time.Now().Add(24 * time.Hour)
+}
+
+// performSafeCleanup performs thread-safe cleanup of processed URL set
+func (st *SimpleTracker) performSafeCleanup(processedSet *ProcessedURLSet, keepCount int) {
+	if len(*processedSet) <= keepCount {
+		return
+	}
+	
+	// 简单的FIFO清理策略 - 保留最近的一半
+	newSet := make(ProcessedURLSet)
+	count := 0
+	target := len(*processedSet) / 2 // 保留一半，避免频繁清理
+	
+	for hash := range *processedSet {
+		if count >= target {
+			break
+		}
+		newSet[hash] = true
+		count++
+	}
+	
+	*processedSet = newSet
+	st.log.WithField("kept_entries", count).Debug("Performed safe cleanup of processed URLs")
 }

@@ -304,28 +304,36 @@ func (sm *SitemapMonitor) ProcessSitemaps(ctx context.Context, sitemapURLs []str
 		"deduplication_ratio":   fmt.Sprintf("%.1f%%", float64(len(uniqueKeywords))/float64(len(allKeywords))*100),
 	}).Info("Global deduplication completed")
 	
-	// Step 2.5: Filter out already processed sitemaps
-	sm.log.WithField("total_sitemaps", len(sitemapURLs)).Info("Step 2.5: Checking for already processed sitemaps")
-	unprocessedSitemaps, err := sm.filterUnprocessedSitemaps(ctx, sitemapURLs)
+	// Step 2.5: URL级别去重 - 直接过滤已处理的URL (修复根本问题)
+	sm.log.WithField("total_keywords", len(uniqueKeywords)).Info("Step 2.5: Filtering already processed URLs")
+	filteredKeywords, err := sm.filterUnprocessedKeywordURLs(ctx, uniqueKeywords, keywordToSpecificURLMap)
 	if err != nil {
-		sm.secureLog.SafeError("Failed to filter processed sitemaps", err, nil)
-		unprocessedSitemaps = sitemapURLs // Fallback to process all
+		sm.secureLog.SafeError("Failed to filter processed URLs", err, nil)
+		filteredKeywords = uniqueKeywords // Fallback to process all
 	}
 
-	// Filter keywords to only include those from unprocessed sitemaps
-	filteredKeywords := sm.filterKeywordsForUnprocessedSitemaps(uniqueKeywords, keywordToSpecificURLMap, unprocessedSitemaps)
-
 	sm.log.WithFields(map[string]interface{}{
-		"total_sitemaps":        len(sitemapURLs),
-		"unprocessed_sitemaps":  len(unprocessedSitemaps),
+		"total_sitemaps":         len(sitemapURLs),
 		"keywords_before_filter": len(uniqueKeywords),
 		"keywords_after_filter":  len(filteredKeywords),
-	}).Info("Sitemap filtering completed")
+	}).Info("URL filtering completed")
 
 	// Step 3: Query SEOKey API for keywords from unprocessed sitemaps only
 	if len(filteredKeywords) > 0 {
 		sm.log.WithField("filtered_keywords", len(filteredKeywords)).Info("Step 3: Starting SEOKey API queries for unprocessed sitemaps")
-		err = sm.queryAndSubmitKeywords(ctx, filteredKeywords, keywordToSpecificURLMap)
+		
+		// Create reverse mapping from keyword to sitemap URL for success tracking
+		keywordToSitemapMap := make(map[string]string)
+		for _, result := range sitemapResults {
+			if result.Success {
+				for _, keyword := range result.Keywords {
+					formattedKeyword := sm.formatKeywordForAPI(keyword)
+					keywordToSitemapMap[formattedKeyword] = result.SitemapURL
+				}
+			}
+		}
+		
+		err = sm.queryAndSubmitKeywords(ctx, filteredKeywords, keywordToSpecificURLMap, keywordToSitemapMap)
 		if err != nil {
 			sm.secureLog.SafeError("Failed to query and submit keywords", err, nil)
 		}
@@ -333,9 +341,8 @@ func (sm *SitemapMonitor) ProcessSitemaps(ctx context.Context, sitemapURLs []str
 		sm.log.Info("No keywords from unprocessed sitemaps found to query")
 	}
 	
-	// Step 4: Update sitemap results and save URL hashes
-	// Step 4: Save URL hashes for processed sitemaps
-	sm.saveProcessedSitemaps(ctx, sitemapResults)
+	// Step 4: Sitemap processing completed
+	// Note: Successful sitemaps are now saved in queryAndSubmitKeywords after API success
 	
 	// Count success/failure for summary
 	successCount := 0
@@ -1015,7 +1022,7 @@ type batchResult struct {
 
 // queryAndSubmitKeywords queries SEOKey API in batches and submits results to backend
 // Uses concurrent batch processing with configurable workers and optimized batch size
-func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords []string, keywordToSpecificURLMap map[string]string) error {
+func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords []string, keywordToSpecificURLMap map[string]string, keywordToSitemapMap map[string]string) error {
 	// Get current configuration for dynamic worker count
 	config := sm.concurrencyManager.GetCurrentConfig()
 	batchSize := 10 // Maximum batch size for SEOKey API (API limit: 10 keywords per request)
@@ -1064,6 +1071,7 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 	// Collect results
 	var allTrendData []api.Keyword
 	var totalErrors int
+	var successfulKeywords []string // Track keywords that were successfully queried
 	
 	for result := range resultChan {
 		if result.err != nil {
@@ -1086,6 +1094,7 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 			}
 		} else if result.trendData != nil && len(result.trendData.Keywords) > 0 {
 			allTrendData = append(allTrendData, result.trendData.Keywords...)
+			successfulKeywords = append(successfulKeywords, result.batch...)
 		}
 	}
 	
@@ -1133,6 +1142,38 @@ func (sm *SitemapMonitor) queryAndSubmitKeywords(ctx context.Context, keywords [
 		if !success {
 			sm.log.Warn("Failed to queue deduplicated data for backend submission")
 		}
+	}
+	
+	// ✅ FIX: Save URLs that had successful API queries (URL级别去重 + 防竞态条件)
+	if len(successfulKeywords) > 0 {
+		// Group successful URLs by sitemap for batch saving
+		sitemapURLsMap := make(map[string][]string)
+		for _, keyword := range successfulKeywords {
+			if specificURL := keywordToSpecificURLMap[keyword]; specificURL != "" {
+				if sitemapURL := keywordToSitemapMap[keyword]; sitemapURL != "" {
+					sitemapURLsMap[sitemapURL] = append(sitemapURLsMap[sitemapURL], specificURL)
+				}
+			}
+		}
+		
+		// Save URLs in batches (thread-safe with mutex)
+		totalSavedURLs := 0
+		for sitemapURL, urls := range sitemapURLsMap {
+			if err := sm.simpleTracker.SaveProcessedURLs(ctx, urls, sitemapURL); err != nil {
+				sm.secureLog.WarnWithURL("Failed to save successfully queried URLs", sitemapURL, map[string]interface{}{
+					"error": err.Error(),
+					"url_count": len(urls),
+				})
+			} else {
+				totalSavedURLs += len(urls)
+			}
+		}
+		
+		sm.log.WithFields(map[string]interface{}{
+			"successful_sitemaps": len(sitemapURLsMap),
+			"successful_urls":     totalSavedURLs,
+			"successful_keywords": len(successfulKeywords),
+		}).Info("✅ Saved successfully queried URLs to avoid reprocessing (URL级别去重)")
 	}
 	
 	return nil
@@ -1183,18 +1224,7 @@ func (sm *SitemapMonitor) filterKeywordsForUnprocessedSitemaps(keywords []string
 	return filteredKeywords
 }
 
-// saveProcessedSitemaps saves URL hashes for all processed sitemaps
-func (sm *SitemapMonitor) saveProcessedSitemaps(ctx context.Context, results []*MonitorResult) {
-	for _, result := range results {
-		if result.Success && len(result.Keywords) > 0 {
-			if err := sm.simpleTracker.SaveProcessedURL(ctx, result.SitemapURL, result.Keywords); err != nil {
-				sm.secureLog.WarnWithURL("Failed to save processed URL hash", result.SitemapURL, map[string]interface{}{
-					"error": err.Error(),
-				})
-			}
-		}
-	}
-}
+// saveProcessedSitemaps function removed - now saving happens in queryAndSubmitKeywords after API success
 
 // Close properly closes all resources (implements proper cleanup)
 func (sm *SitemapMonitor) Close() error {

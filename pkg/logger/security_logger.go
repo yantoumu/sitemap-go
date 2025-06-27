@@ -1,11 +1,13 @@
 package logger
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
+
+	"sitemap-go/pkg/utils"
 )
 
 // SecurityLogger provides methods to safely log sensitive information
@@ -219,16 +221,17 @@ func (sl *SecurityLogger) DebugWithURL(msg string, url string, extraFields map[s
 
 // Helper functions
 func (sl *SecurityLogger) generateURLHash(url string) string {
-	return fmt.Sprintf("%x", md5.Sum([]byte(url)))
+	return utils.CalculateURLHash(url)
 }
 
 func (sl *SecurityLogger) generateHash(data string) string {
-	return fmt.Sprintf("%x", md5.Sum([]byte(data)))
+	hash := sha256.Sum256([]byte(data))
+	return fmt.Sprintf("%x", hash[:8]) // 只取前8字节，保持兼容性
 }
 
-// GenerateHash exports hash function for main package
+// GenerateHash exports hash function for main package  
 func (sl *SecurityLogger) GenerateHash(data string) string {
-	return fmt.Sprintf("%x", md5.Sum([]byte(data)))
+	return sl.generateHash(data) // 使用安全的SHA256哈希
 }
 
 // MaskLogMessage masks sensitive information in log messages

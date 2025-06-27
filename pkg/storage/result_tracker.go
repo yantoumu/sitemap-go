@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"time"
 
 	"sitemap-go/pkg/logger"
@@ -74,17 +76,17 @@ func (qt *QueryTracker) GetQueryStates(ctx context.Context, domain string) ([]Qu
 	return states, nil
 }
 
-// CalculateURLHash generates a hash for URL and keywords combination
-func (qt *QueryTracker) CalculateURLHash(url string, keywords []string) string {
+// CalculateURLKeywordHash generates a hash for URL and keywords combination
+// This is different from utils.CalculateURLHash which only hashes URLs
+func (qt *QueryTracker) CalculateURLKeywordHash(url string, keywords []string) string {
 	// Sort keywords for consistent hash
 	sortedKeywords := make([]string, len(keywords))
 	copy(sortedKeywords, keywords)
 	sort.Strings(sortedKeywords)
 	
-	// Create deterministic string
+	// Create deterministic string and use unified hash utility
 	data := fmt.Sprintf("%s:%v", url, sortedKeywords)
-	hash := md5.Sum([]byte(data))
-	return fmt.Sprintf("%x", hash)
+	return utils.CalculateURLHash(data) // Use unified hash utility
 }
 
 // CompareWithPrevious compares current URLs with previous query states
@@ -104,7 +106,7 @@ func (qt *QueryTracker) CompareWithPrevious(ctx context.Context, domain string, 
 	var changedURLs []string  // URLs with different keywords
 	
 	for url, keywords := range currentURLs {
-		currentHash := qt.CalculateURLHash(url, keywords)
+		currentHash := qt.CalculateURLKeywordHash(url, keywords)
 		
 		if prevState, exists := previousHashes[currentHash]; exists {
 			// URL with same keywords exists and was queried successfully
