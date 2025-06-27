@@ -80,8 +80,29 @@ jobs:
         echo "✅ Build completed successfully"
         echo "📦 Binary size: $(ls -lh sitemap-go | awk '{print $5}')"
     
-    - name: Create data directory
-      run: mkdir -p ./data ./data-export
+    - name: Create data directory and restore previous data
+      env:
+        DATA_BRANCH: 'monitoring-data'
+      run: |
+        mkdir -p ./data ./data-export
+        
+        # 从数据分支恢复之前的监控数据
+        if git ls-remote --heads origin ${DATA_BRANCH} | grep -q ${DATA_BRANCH}; then
+          echo "📥 Restoring previous monitoring data from ${DATA_BRANCH} branch..."
+          git fetch origin ${DATA_BRANCH}
+          
+          # 使用git show从数据分支获取文件，避免切换分支
+          git checkout origin/${DATA_BRANCH} -- monitoring-data/ 2>/dev/null || echo "No previous data found"
+          
+          # 将恢复的数据移动到正确位置
+          if [ -d "./monitoring-data" ]; then
+            cp -r ./monitoring-data/* ./data/ 2>/dev/null || true
+            rm -rf ./monitoring-data
+            echo "✅ Restored $(find ./data -type f | wc -l) data files for comparison"
+          fi
+        else
+          echo "📝 No previous data branch found, starting fresh"
+        fi
     
     - name: Run sitemap monitoring
       env:
@@ -200,19 +221,36 @@ jobs:
           jq -r '.recent_failures[:5][] | "- \(.keyword) from \(.sitemap_url)"' ./data-export/failed_keywords_summary.json >> $GITHUB_STEP_SUMMARY || true
         fi
         
-    # 将监控数据直接提交到main分支（用于持久化存储）
-    - name: Commit monitoring data to main branch
+    # 将监控数据提交到专用数据分支（安全的持久化存储）
+    - name: Commit monitoring data to data branch
       if: always() && github.event_name == 'schedule'
+      env:
+        DATA_BRANCH: 'monitoring-data'
       run: |
         # 配置Git用户信息
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
 
-        # 确保在main分支上
-        git checkout main
+        # 检查或创建数据分支
+        if git ls-remote --heads origin ${DATA_BRANCH} | grep -q ${DATA_BRANCH}; then
+          echo "📊 Switching to existing data branch..."
+          git fetch origin ${DATA_BRANCH}:${DATA_BRANCH}
+          git checkout ${DATA_BRANCH}
+        else
+          echo "📊 Creating new data branch..."
+          git checkout -b ${DATA_BRANCH}
+          echo "# Monitoring Data Branch" > README.md
+          echo "This branch contains automated monitoring data. DO NOT merge into main." >> README.md
+          git add README.md
+          git commit -m "chore: initialize data branch"
+          git push origin ${DATA_BRANCH}
+        fi
 
-        # 拉取最新的main分支更改以避免冲突
-        git pull origin main || echo "Pull failed, continuing with local changes"
+        # 拉取最新的数据分支更改
+        git pull origin ${DATA_BRANCH} --rebase || echo "No remote changes"
+
+        # 清理超过30天的旧数据
+        find ./data -name "*.enc" -type f -mtime +30 -delete 2>/dev/null || true
 
         # 创建监控数据目录
         mkdir -p monitoring-data
@@ -226,39 +264,33 @@ jobs:
           cp -r ./data-export/* monitoring-data/ 2>/dev/null || echo "No data-export files to copy"
         fi
 
+        # 生成数据统计
+        echo "# Data Statistics" > DATA_STATS.md
+        echo "Updated: $(date -u)" >> DATA_STATS.md
+        echo "Files: $(find monitoring-data -type f | wc -l)" >> DATA_STATS.md
+
         # 检查是否有文件变更
-        if [ -n "$(git status --porcelain monitoring-data/)" ]; then
+        if [ -n "$(git status --porcelain)" ]; then
           # 添加监控数据文件
-          git add monitoring-data/
+          git add monitoring-data/ DATA_STATS.md
 
-          # 提交更改
-          git commit -m "chore: update monitoring data - Run #${{ github.run_number }}
+          # 提交更改（使用[skip ci]避免触发其他工作流）
+          git commit -m "data: update monitoring - Run #${{ github.run_number }} [skip ci]
 
-          - Automated monitoring data update
           - Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
           - Workflow: ${{ github.workflow }}
-          - Run ID: ${{ github.run_id }}" || echo "Commit failed, no changes detected"
+          - Run ID: ${{ github.run_id }}"
 
-          # 推送到main分支，使用重试机制处理潜在冲突
-          for i in {1..3}; do
-            if git push origin main; then
-              echo "✅ Successfully pushed monitoring data to main branch"
-              break
-            else
-              echo "⚠️ Push attempt $i failed, retrying..."
-              if [ $i -lt 3 ]; then
-                # 拉取最新更改并尝试重新合并
-                git pull --rebase origin main || git pull origin main
-                sleep 5
-              else
-                echo "❌ Failed to push after 3 attempts"
-                exit 1
-              fi
-            fi
-          done
+          # 推送到数据分支
+          git push origin ${DATA_BRANCH}
+          echo "✅ Successfully pushed monitoring data to ${DATA_BRANCH} branch"
+          echo "📊 View data at: https://github.com/${{ github.repository }}/tree/${DATA_BRANCH}"
         else
           echo "📝 No monitoring data changes detected, skipping commit"
         fi
+
+        # 切回main分支（为了工作流的后续步骤）
+        git checkout main || true
 
   # 可选：通知作业 (如果需要)
   notify:
