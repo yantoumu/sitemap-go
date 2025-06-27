@@ -1127,3 +1127,9 @@ func (sm *SitemapMonitor) processBatchWorker(ctx context.Context, workerID int, 
 func parseURL(urlStr string) (*url.URL, error) {
 	return url.Parse(urlStr)
 }
+
+// ExportDataSummary exports data summary for GitHub Actions
+func (sm *SitemapMonitor) ExportDataSummary(ctx context.Context, outputDir string) error {
+	exporter := storage.NewDataExporter(sm.storage)
+	return exporter.ExportReport(ctx, outputDir)
+}

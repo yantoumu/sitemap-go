@@ -1,0 +1,230 @@
+name: Sitemap Monitor (Improved)
+
+on:
+  # 定时运行：每天2次
+  # 中国时间(UTC+8): 早上7:00 = UTC 23:00(前一天)
+  # 中国时间(UTC+8): 晚上23:00 = UTC 15:00
+  schedule:
+    - cron: '0 23 * * *'  # 中国时间早上7:00
+    - cron: '0 15 * * *'  # 中国时间晚上23:00
+  
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      sitemap_workers:
+        description: 'Number of sitemap workers'
+        required: false
+        default: '30'
+      api_workers:
+        description: 'Number of API workers'
+        required: false
+        default: '8'
+      debug:
+        description: 'Enable debug logging'
+        required: false
+        default: 'false'
+
+env:
+  GO_VERSION: '1.21'
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Cache Go modules
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/go-build
+          /go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+          
+    # 缓存监控数据以实现持久化
+    - name: Cache monitoring data
+      uses: actions/cache@v4
+      with:
+        path: ./data
+        key: monitoring-data-${{ runner.os }}-${{ github.run_number }}
+        restore-keys: |
+          monitoring-data-${{ runner.os }}-
+          
+    - name: Download dependencies
+      run: go mod download
+      
+    - name: Build sitemap monitor
+      run: |
+        go mod tidy
+        go build -ldflags="-s -w" -o sitemap-go main.go
+        chmod +x sitemap-go
+        echo "✅ Build completed successfully"
+        echo "📦 Binary size: $(ls -lh sitemap-go | awk '{print $5}')"
+    
+    - name: Create data directory
+      run: mkdir -p ./data ./data-export
+    
+    - name: Run sitemap monitoring
+      env:
+        # 必需的配置 (从 GitHub Secrets)
+        BACKEND_URL: ${{ secrets.BACKEND_API_URL }}
+        BACKEND_API_KEY: ${{ secrets.BACKEND_API_KEY }}
+        TRENDS_API_URL: ${{ secrets.TRENDS_API_URL }}
+        TRENDS_API_URL_SECONDARY: ${{ secrets.TRENDS_API_URL_SECONDARY || secrets.TRENDS_API_URL }}
+        ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+        
+        # 基础配置 (可调整)
+        SITEMAP_WORKERS: ${{ github.event.inputs.sitemap_workers || '30' }}
+        API_WORKERS: ${{ github.event.inputs.api_workers || '8' }}
+        DEBUG: ${{ github.event.inputs.debug || 'false' }}
+        
+        # 性能配置 (GitHub Actions 优化)
+        API_RATE_LIMIT: '10.0'      # 提高API请求频率（新API支持）
+        SITEMAP_RATE_LIMIT: '30.0'  # 适中的sitemap抓取频率
+        BATCH_SIZE: '8'             # 8个关键词批量查询
+        MAX_URLS_PER_SITEMAP: '50000'  # 限制大型sitemap
+        
+        # 默认监控网站 (从 secrets 设置)
+        SITEMAP_URLS: ${{ secrets.SITEMAP_URLS }}
+        
+        # GitHub Actions 环境标记
+        GITHUB_ACTIONS: 'true'
+      run: |
+        echo "🚀 Starting sitemap monitoring with optimized configuration..."
+        echo "📊 Configuration:"
+        echo "  - Sitemap workers: $SITEMAP_WORKERS"
+        echo "  - API workers: $API_WORKERS"
+        echo "  - Debug mode: $DEBUG"
+        echo "  - API rate limit: $API_RATE_LIMIT req/sec"
+        echo "  - Sitemap rate limit: $SITEMAP_RATE_LIMIT req/sec"
+        echo "  - Batch size: $BATCH_SIZE keywords"
+        
+        # 检查 SITEMAP_URLS 设置
+        if [ -z "$SITEMAP_URLS" ]; then
+          echo "📝 Note: SITEMAP_URLS not set, will use default sitemap list"
+        else
+          echo "📝 SITEMAP_URLS is configured (URLs are masked for security)"
+        fi
+        
+        # 验证必需的环境变量
+        if [ -z "$BACKEND_URL" ]; then
+          echo "❌ ERROR: BACKEND_API_URL secret is required"
+          echo "Please set BACKEND_API_URL in GitHub repository secrets"
+          exit 1
+        fi
+        
+        if [ -z "$BACKEND_API_KEY" ]; then
+          echo "❌ ERROR: BACKEND_API_KEY secret is required"
+          echo "Please set BACKEND_API_KEY in GitHub repository secrets"
+          exit 1
+        fi
+        
+        if [ -z "$TRENDS_API_URL" ]; then
+          echo "❌ ERROR: TRENDS_API_URL secret is required"
+          echo "Please set TRENDS_API_URL in GitHub repository secrets"
+          exit 1
+        fi
+        
+        if [ -z "$ENCRYPTION_KEY" ]; then
+          echo "❌ ERROR: ENCRYPTION_KEY secret is required"
+          echo "Please set ENCRYPTION_KEY in GitHub repository secrets"
+          echo "Generate with: openssl rand -base64 32"
+          exit 1
+        fi
+        
+        # 运行监控脚本
+        ./sitemap-go
+        
+    # 总是上传监控结果（成功和失败都上传）
+    - name: Upload monitoring results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: monitoring-results-${{ github.run_number }}
+        path: |
+          ./data/
+          ./data-export/
+          *.log
+        retention-days: 30
+        compression-level: 6
+        include-hidden-files: false
+    
+    - name: Create summary report
+      if: always()
+      run: |
+        echo "## 🔍 Sitemap Monitoring Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Run ID**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **UTC Time**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+        echo "- **China Time**: $(TZ='Asia/Shanghai' date)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Configuration**:" >> $GITHUB_STEP_SUMMARY
+        echo "  - Sitemap Workers: $SITEMAP_WORKERS" >> $GITHUB_STEP_SUMMARY
+        echo "  - API Workers: $API_WORKERS" >> $GITHUB_STEP_SUMMARY
+        echo "  - Debug Mode: $DEBUG" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+        
+        # 检查导出的摘要文件
+        if [ -f "./data-export/monitoring_summary.json" ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Monitoring Statistics" >> $GITHUB_STEP_SUMMARY
+          TOTAL_PROCESSED=$(jq -r .total_processed ./data-export/monitoring_summary.json)
+          TOTAL_FAILED=$(jq -r .total_failed ./data-export/monitoring_summary.json)
+          SUCCESS_RATE=$(jq -r .success_rate ./data-export/monitoring_summary.json)
+          echo "- **Total Processed**: $TOTAL_PROCESSED" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Failed**: $TOTAL_FAILED" >> $GITHUB_STEP_SUMMARY
+          echo "- **Success Rate**: ${SUCCESS_RATE}%" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # 显示最近的失败关键词
+        if [ -f "./data-export/failed_keywords_summary.json" ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ❌ Recent Failed Keywords" >> $GITHUB_STEP_SUMMARY
+          jq -r '.recent_failures[:5][] | "- \(.keyword) from \(.sitemap_url)"' ./data-export/failed_keywords_summary.json >> $GITHUB_STEP_SUMMARY || true
+        fi
+        
+    # 可选：将数据推送回GitHub仓库（用于持久化存储）
+    - name: Commit monitoring data
+      if: always() && github.event_name == 'schedule'
+      run: |
+        # 配置Git
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # 创建或切换到数据分支
+        git fetch origin data-storage || true
+        git checkout data-storage || git checkout -b data-storage
+        
+        # 复制数据文件
+        mkdir -p monitoring-data
+        cp -r ./data/* monitoring-data/ || true
+        cp -r ./data-export/* monitoring-data/ || true
+        
+        # 提交更改
+        git add monitoring-data/
+        git commit -m "Update monitoring data - Run #${{ github.run_number }}" || echo "No changes to commit"
+        
+        # 推送到远程仓库
+        git push origin data-storage || git push --set-upstream origin data-storage
+
+  # 可选：通知作业 (如果需要)
+  notify:
+    runs-on: ubuntu-latest
+    needs: monitor
+    if: failure()  # 仅在监控失败时通知
+    
+    steps:
+    - name: Notify on failure
+      run: |
+        echo "❌ Sitemap monitoring failed at $(date -u)"
+        echo "🔗 Job URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        # 可以在这里添加 Slack、Discord 或其他通知
+        # 例如：curl -X POST "webhook-url" -d "Sitemap monitoring failed"

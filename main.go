@@ -277,6 +277,24 @@ func main() {
 	}
 	
 	fmt.Printf("\nResults have been saved to local storage for future reference.\n")
+	
+	// Export data summary for GitHub Actions
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		log.Info("Exporting data summary for GitHub Actions")
+		
+		// Create data directory if not exists
+		if err := os.MkdirAll("./data-export", 0755); err != nil {
+			log.WithError(err).Error("Failed to create data-export directory")
+		} else {
+			// Export summary reports through monitor
+			if err := sitemapMonitor.ExportDataSummary(ctx, "./data-export"); err != nil {
+				log.WithError(err).Error("Failed to export data summary")
+			} else {
+				log.Info("Data summary exported successfully to ./data-export")
+				fmt.Println("\n📊 Data summary exported for GitHub Actions artifact upload")
+			}
+		}
+	}
 }
 
 func printUsage() {
