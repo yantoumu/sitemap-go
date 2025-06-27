@@ -48,8 +48,8 @@ func DefaultConcurrencyConfig() ConcurrencyConfig {
 		ParseWorkers:      10,  // 🚀 10个XML解析worker (CPU密集，充分利用多核)
 		ExtractWorkers:    8,   // 🚀 8个关键词提取worker (轻量级，快速处理)
 
-		// API查询层：优化为双SEOKey API配置
-		APIWorkers:        4,   // 🎯 4个API查询worker (双API均衡负载)
+		// API查询层：优化为双SEOKey API配置  
+		APIWorkers:        8,   // 🚀 8个API查询worker (双API高并发负载)
 		APIRequestsPerSecond: 2.5, // 🎯 每个API每秒2.5个请求 (双API总计5 req/sec)
 
 		// 原子并发控制：精确管理API请求 (inspired by 1.js)
@@ -171,7 +171,7 @@ func (acm *AdaptiveConcurrencyManager) adjustConcurrency() {
 		
 	} else if acm.errorRate < 0.01 && acm.responseTime < 10*time.Second {
 		// 谨慎增加API并发 - 更新为双SEOKey API的限制
-		acm.config.APIWorkers = min(8, acm.config.APIWorkers+1) // 最多8个API worker (双API支持更高并发)
+		acm.config.APIWorkers = min(12, acm.config.APIWorkers+1) // 最多12个API worker (双API支持更高并发)
 		acm.config.APIRequestsPerSecond = minFloat(2.5, acm.config.APIRequestsPerSecond*1.05) // 保守增长，每个API不超过2.5 req/sec
 		
 		acm.log.WithFields(map[string]interface{}{
