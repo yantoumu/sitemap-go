@@ -65,7 +65,6 @@ func main() {
 	// Additional environment variables for advanced configuration
 	defaultAPIWorkers := getEnvIntOrDefault("API_WORKERS", 4)
 	defaultAPIRateLimit := getEnvOrDefault("API_RATE_LIMIT", "2.0")
-	defaultSitemapRateLimit := getEnvOrDefault("SITEMAP_RATE_LIMIT", "30.0")
 	defaultMaxURLs := getEnvIntOrDefault("MAX_URLS_PER_SITEMAP", 100000)
 	
 	// Command line flags (override environment variables)
@@ -81,10 +80,9 @@ func main() {
 		encryptionKey = flag.String("encryption-key", defaultEncryptionKey, "Encryption key for storing sensitive data (env: ENCRYPTION_KEY)")
 		
 		// Advanced configuration flags
-		apiWorkers      = flag.Int("api-workers", defaultAPIWorkers, "Number of API query workers (env: API_WORKERS)")
-		apiRateLimit    = flag.String("api-rate-limit", defaultAPIRateLimit, "API requests per second (env: API_RATE_LIMIT)")
-		sitemapRateLimit = flag.String("sitemap-rate-limit", defaultSitemapRateLimit, "Sitemap requests per second (env: SITEMAP_RATE_LIMIT)")
-		maxURLs         = flag.Int("max-urls", defaultMaxURLs, "Maximum URLs per sitemap (env: MAX_URLS_PER_SITEMAP)")
+		apiWorkers   = flag.Int("api-workers", defaultAPIWorkers, "Number of API query workers (env: API_WORKERS)")
+		apiRateLimit = flag.String("api-rate-limit", defaultAPIRateLimit, "API requests per second (env: API_RATE_LIMIT)")
+		maxURLs      = flag.Int("max-urls", defaultMaxURLs, "Maximum URLs per sitemap (env: MAX_URLS_PER_SITEMAP)")
 	)
 	
 	flag.Parse()
@@ -146,7 +144,6 @@ func main() {
 		"sitemap_workers":     *workers,
 		"api_workers":         *apiWorkers,
 		"api_rate_limit":      *apiRateLimit,
-		"sitemap_rate_limit":  *sitemapRateLimit,
 		"batch_size":          *batchSize,
 		"max_urls":            *maxURLs,
 		"backend_url_set":     *backendURL != "",
@@ -333,7 +330,6 @@ func printUsage() {
 	fmt.Println("ADVANCED OPTIONS:")
 	fmt.Println("    -api-workers int       API query workers (default: 4, env: API_WORKERS)")
 	fmt.Println("    -api-rate-limit string API requests/sec (default: 2.0, env: API_RATE_LIMIT)")
-	fmt.Println("    -sitemap-rate-limit string Sitemap requests/sec (default: 30.0, env: SITEMAP_RATE_LIMIT)")
 	fmt.Println("    -max-urls int          Max URLs per sitemap (default: 100000, env: MAX_URLS_PER_SITEMAP)")
 	fmt.Println("    -help                  Show this help message")
 	fmt.Println("")
@@ -344,7 +340,6 @@ func printUsage() {
 	fmt.Println("    SITEMAP_WORKERS        Number of sitemap workers (15)")
 	fmt.Println("    API_WORKERS            Number of API workers (4)")
 	fmt.Println("    API_RATE_LIMIT         API requests per second (2.0)")
-	fmt.Println("    SITEMAP_RATE_LIMIT     Sitemap requests per second (30.0)")
 	fmt.Println("    BATCH_SIZE             Keywords per API batch (5)")
 	fmt.Println("    MAX_URLS_PER_SITEMAP   Max URLs per sitemap (100000)")
 	fmt.Println("    DEBUG                  Enable debug logging (false)")
@@ -368,8 +363,8 @@ func printUsage() {
 	fmt.Println("      API_WORKERS: 4")
 	fmt.Println("")
 	fmt.Println("PERFORMANCE OPTIMIZED:")
-	fmt.Println("- Fast sitemap processing: 15 concurrent workers")
-	fmt.Println("- Controlled API queries: 4 workers, 1 req/sec (avoid rate limits)")
+	fmt.Println("- Fast sitemap processing: 15 concurrent workers with adaptive concurrency")
+	fmt.Println("- Controlled API queries: 4 workers, 2.0 req/sec (avoid rate limits)")
 	fmt.Println("- Global keyword deduplication")
 	fmt.Println("- Non-blocking backend submission")
 	fmt.Println("- Automatic retry for failed keywords")
