@@ -30,7 +30,6 @@ env:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     # 添加必要的权限以支持向main分支推送
     permissions:
@@ -99,9 +98,9 @@ jobs:
         DEBUG: ${{ github.event.inputs.debug || 'false' }}
         
         # 性能配置 (GitHub Actions 优化)
-        API_RATE_LIMIT: '10.0'      # 提高API请求频率（新API支持）
+        API_RATE_LIMIT: '5.0'       # 优化API请求频率（避免429错误）
         SITEMAP_RATE_LIMIT: '30.0'  # 适中的sitemap抓取频率
-        BATCH_SIZE: '8'             # 8个关键词批量查询
+        BATCH_SIZE: '5'             # 5个关键词批量查询（符合API限制）
         MAX_URLS_PER_SITEMAP: '50000'  # 限制大型sitemap
         
         # 默认监控网站 (从 secrets 设置)
