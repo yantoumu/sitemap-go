@@ -84,21 +84,49 @@ jobs:
       env:
         DATA_BRANCH: 'monitoring-data'
       run: |
-        mkdir -p ./data ./data-export
+        # 创建正确的数据目录结构（匹配EncryptedFileStorage的getFilePath逻辑）
+        mkdir -p ./data/pr ./data/fa ./data/si ./data-export
         
         # 从数据分支恢复之前的监控数据
         if git ls-remote --heads origin ${DATA_BRANCH} | grep -q ${DATA_BRANCH}; then
           echo "📥 Restoring previous monitoring data from ${DATA_BRANCH} branch..."
           git fetch origin ${DATA_BRANCH}
           
-          # 使用git show从数据分支获取文件，避免切换分支
-          git checkout origin/${DATA_BRANCH} -- monitoring-data/ 2>/dev/null || echo "No previous data found"
+          # 直接检出data目录，保持完整的目录结构
+          git checkout origin/${DATA_BRANCH} -- data/ 2>/dev/null || echo "No previous data directory found"
           
-          # 将恢复的数据移动到正确位置
-          if [ -d "./monitoring-data" ]; then
-            cp -r ./monitoring-data/* ./data/ 2>/dev/null || true
-            rm -rf ./monitoring-data
-            echo "✅ Restored $(find ./data -type f | wc -l) data files for comparison"
+          # 验证关键文件是否正确恢复
+          if [ -f "./data/pr/processed_urls.enc" ]; then
+            echo "✅ Restored processed URLs: $(stat -c%s "./data/pr/processed_urls.enc" 2>/dev/null || echo "unknown") bytes"
+          else
+            echo "📝 No processed URLs found"
+          fi
+          
+          if [ -f "./data/fa/failed_keywords.enc" ]; then
+            echo "✅ Restored failed keywords: $(stat -c%s "./data/fa/failed_keywords.enc" 2>/dev/null || echo "unknown") bytes"
+          else
+            echo "📝 No failed keywords found"
+          fi
+          
+          # 统计sitemap数据文件
+          SITEMAP_FILES=$(find ./data/si -name "*.enc" 2>/dev/null | wc -l)
+          echo "✅ Restored $SITEMAP_FILES sitemap data files"
+          
+          echo "📊 Total restored files: $(find ./data -name "*.enc" 2>/dev/null | wc -l)"
+          
+          # 验证加密密钥一致性
+          if git checkout origin/${DATA_BRANCH} -- DATA_META.json 2>/dev/null; then
+            STORED_HASH=$(jq -r .encryption_key_hash DATA_META.json 2>/dev/null || echo "")
+            CURRENT_HASH=$(echo -n "$ENCRYPTION_KEY" | sha256sum | cut -d' ' -f1 | head -c 8)
+            if [ "$STORED_HASH" != "" ] && [ "$STORED_HASH" != "$CURRENT_HASH" ]; then
+              echo "⚠️ WARNING: Encryption key mismatch detected!"
+              echo "  Previous hash: $STORED_HASH"
+              echo "  Current hash:  $CURRENT_HASH"
+              echo "  This may prevent data loading. Consider key rotation if needed."
+            else
+              echo "✅ Encryption key consistency verified"
+            fi
+            rm -f DATA_META.json # 清理临时文件
           fi
         else
           echo "📝 No previous data branch found, starting fresh"
@@ -249,30 +277,41 @@ jobs:
         # 拉取最新的数据分支更改
         git pull origin ${DATA_BRANCH} --rebase || echo "No remote changes"
 
-        # 清理超过30天的旧数据
-        find ./data -name "*.enc" -type f -mtime +30 -delete 2>/dev/null || true
-
-        # 创建监控数据目录
-        mkdir -p monitoring-data
-
-        # 复制数据文件到监控数据目录
+        # 清理超过30天的旧数据（在数据分支上进行）
         if [ -d "./data" ]; then
-          cp -r ./data/* monitoring-data/ 2>/dev/null || echo "No data files to copy"
+          find ./data -name "*.enc" -type f -mtime +30 -delete 2>/dev/null || true
+          echo "🧹 Cleaned old data files (>30 days)"
         fi
 
-        if [ -d "./data-export" ]; then
-          cp -r ./data-export/* monitoring-data/ 2>/dev/null || echo "No data-export files to copy"
-        fi
+        # 验证当前数据完整性
+        echo "📊 Current data inventory:"
+        PROCESSED_URLS=$([ -f "./data/pr/processed_urls.enc" ] && echo "✅" || echo "❌")
+        FAILED_KEYWORDS=$([ -f "./data/fa/failed_keywords.enc" ] && echo "✅" || echo "❌")
+        SITEMAP_COUNT=$(find ./data/si -name "*.enc" 2>/dev/null | wc -l)
+        
+        echo "  - Processed URLs: $PROCESSED_URLS"
+        echo "  - Failed keywords: $FAILED_KEYWORDS"  
+        echo "  - Sitemap files: $SITEMAP_COUNT"
+        
+        # 生成数据元信息
+        cat > DATA_META.json <<EOF
+{
+  "updated_at": "$(date -u '+%Y-%m-%d %H:%M:%S UTC')",
+  "run_number": "${{ github.run_number }}",
+  "workflow_id": "${{ github.run_id }}",
+  "files": {
+    "processed_urls": "$([ -f "./data/pr/processed_urls.enc" ] && echo "present" || echo "missing")",
+    "failed_keywords": "$([ -f "./data/fa/failed_keywords.enc" ] && echo "present" || echo "missing")",
+    "sitemap_count": $SITEMAP_COUNT
+  },
+  "encryption_key_hash": "$(echo -n "$ENCRYPTION_KEY" | sha256sum | cut -d' ' -f1 | head -c 8)"
+}
+EOF
 
-        # 生成数据统计
-        echo "# Data Statistics" > DATA_STATS.md
-        echo "Updated: $(date -u)" >> DATA_STATS.md
-        echo "Files: $(find monitoring-data -type f | wc -l)" >> DATA_STATS.md
-
-        # 检查是否有文件变更
-        if [ -n "$(git status --porcelain)" ]; then
-          # 添加监控数据文件
-          git add monitoring-data/ DATA_STATS.md
+        # 检查是否有文件变更（现在直接检查data目录）
+        if [ -n "$(git status --porcelain data/ DATA_META.json 2>/dev/null)" ]; then
+          # 添加监控数据文件（直接添加data目录）
+          git add data/ DATA_META.json
 
           # 提交更改（使用[skip ci]避免触发其他工作流）
           git commit -m "data: update monitoring - Run #${{ github.run_number }} [skip ci]
