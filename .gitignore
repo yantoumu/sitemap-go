@@ -69,3 +69,4 @@ Thumbs.db
 *.md
 !README.md
 !CLAUDE.md
+!DATA_PERSISTENCE_STRATEGY.md
