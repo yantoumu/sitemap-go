@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -1436,17 +1435,8 @@ func (sm *SitemapMonitor) configureAtomicConcurrencyControl(apiURL string) {
 		sm.log.Warn("API client does not support concurrency configuration")
 	}
 
-	// If secondary API is configured, set up its concurrency control too
-	if secondaryURL := os.Getenv("TRENDS_API_URL_SECONDARY"); secondaryURL != "" && secondaryURL != apiURL {
-		_ = sm.rateLimiterPool.GetOrCreateAtomicLimiter(
-			secondaryURL, config.MaxConcurrentPerAPI, config.ConcurrencyTimeout)
-
-		sm.log.WithFields(map[string]interface{}{
-			"secondary_api_endpoint": sm.maskAPIEndpoint(secondaryURL),
-			"max_concurrent":         config.MaxConcurrentPerAPI,
-			"acquire_timeout":        config.ConcurrencyTimeout,
-		}).Info("Secondary API atomic concurrency control configured")
-	}
+	// Note: Secondary API concurrency control is automatically configured
+	// when using dual API client through the rate limiter pool
 }
 
 // maskAPIEndpoint masks API endpoint for secure logging
