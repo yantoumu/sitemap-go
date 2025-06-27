@@ -1,0 +1,52 @@
+name: Sitemap Monitor (Simple)
+
+on:
+  schedule:
+    - cron: '0 23 * * *'  # 中国时间早上7:00
+    - cron: '0 15 * * *'  # 中国时间晚上23:00
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+        
+    # 极简数据恢复：5行代替300行
+    - name: Restore monitoring cache
+      uses: actions/cache@v4
+      with:
+        path: ./data-cache
+        key: sitemap-monitoring-${{ github.repository }}-${{ github.ref }}
+        restore-keys: |
+          sitemap-monitoring-${{ github.repository }}-
+          
+    - name: Build and run monitoring
+      env:
+        BACKEND_URL: ${{ secrets.BACKEND_API_URL }}
+        BACKEND_API_KEY: ${{ secrets.BACKEND_API_KEY }}
+        TRENDS_API_URL: ${{ secrets.TRENDS_API_URL }}
+        # 移除加密密钥 - 不再需要
+        SITEMAP_WORKERS: '30'
+        API_WORKERS: '8'
+        DATA_DIR: './data-cache'  # 使用缓存目录
+      run: |
+        go mod download
+        go build -o sitemap-go .
+        ./sitemap-go
+        
+    # 缓存自动保存，无需手动操作
+    - name: Upload results (for debugging)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: monitoring-results-${{ github.run_number }}
+        path: ./data-cache/
+        retention-days: 7
