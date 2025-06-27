@@ -3,6 +3,7 @@ package monitor
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -167,6 +168,13 @@ func (b *MonitorConfigBuilder) createMonitor() (*SitemapMonitor, error) {
 		WorkerPoolSize:          b.workers,
 		EncryptionKey:          b.encryptionKey,
 		EnableBackendSubmission: true,
+	}
+	
+	// Check for dual API configuration from environment
+	secondaryAPIURL := os.Getenv("TRENDS_API_URL_SECONDARY")
+	if secondaryAPIURL != "" {
+		// Use dual API monitor for load balancing
+		return NewMonitorWithDualAPI(config, b.backendURL, b.backendAPIKey, b.batchSize, b.trendsAPIURL, secondaryAPIURL)
 	}
 	
 	// Use the safe internal constructor
