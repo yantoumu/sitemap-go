@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"testing"
+
+	"sitemap-go/pkg/utils"
 )
 
 func TestSimpleTracker_URLHashLogic(t *testing.T) {
@@ -85,14 +87,11 @@ func TestSimpleTracker_URLHashLogic(t *testing.T) {
 }
 
 func TestSimpleTracker_HashConsistency(t *testing.T) {
-	storage := NewMemoryStorage()
-	tracker := NewSimpleTracker(storage)
-
 	sitemapURL := "https://example.com/sitemap.xml"
 
 	// Calculate hash for same URL (should be identical)
-	hash1 := tracker.calculateURLHash(sitemapURL)
-	hash2 := tracker.calculateURLHash(sitemapURL)
+	hash1 := utils.CalculateURLHash(sitemapURL)
+	hash2 := utils.CalculateURLHash(sitemapURL)
 
 	// Hashes should be identical (URL-only hashing)
 	if hash1 != hash2 {
@@ -101,7 +100,7 @@ func TestSimpleTracker_HashConsistency(t *testing.T) {
 
 	// Hash should be deterministic
 	differentURL := "https://different.com/sitemap.xml"
-	hash3 := tracker.calculateURLHash(differentURL)
+	hash3 := utils.CalculateURLHash(differentURL)
 
 	if hash1 == hash3 {
 		t.Error("Expected different hashes for different URLs")

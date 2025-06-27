@@ -121,10 +121,10 @@ func TestAtomicConcurrencyLimiter_Stats(t *testing.T) {
 		t.Errorf("Expected TotalAcquires>=2, got %d", stats.TotalAcquires)
 	}
 
-	// Test timeout - use context timeout shorter than limiter timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	// Test timeout - use context timeout longer than limiter timeout to test limiter timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	err := limiter.Acquire(ctx) // Should timeout
+	err := limiter.Acquire(ctx) // Should timeout due to no available permits
 	if err == nil {
 		t.Error("Expected timeout error, got nil")
 	}

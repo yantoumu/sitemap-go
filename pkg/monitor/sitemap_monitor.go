@@ -1224,6 +1224,63 @@ func (sm *SitemapMonitor) filterKeywordsForUnprocessedSitemaps(keywords []string
 	return filteredKeywords
 }
 
+// filterUnprocessedKeywordURLs filters keywords to only include those whose associated URLs haven't been processed
+// This implements URL-level deduplication to avoid reprocessing already handled URLs
+func (sm *SitemapMonitor) filterUnprocessedKeywordURLs(ctx context.Context, keywords []string, keywordToSpecificURLMap map[string]string) ([]string, error) {
+	if len(keywords) == 0 {
+		return keywords, nil
+	}
+
+	// Collect all specific URLs that need to be checked
+	urlsToCheck := make([]string, 0, len(keywords))
+	keywordToURL := make(map[string]string)
+	
+	for _, keyword := range keywords {
+		if specificURL, exists := keywordToSpecificURLMap[keyword]; exists && specificURL != "" {
+			urlsToCheck = append(urlsToCheck, specificURL)
+			keywordToURL[keyword] = specificURL
+		}
+	}
+
+	if len(urlsToCheck) == 0 {
+		// No URLs to check, return all keywords
+		return keywords, nil
+	}
+
+	// Check which URLs have been processed using batch method for efficiency
+	urlProcessingStatus, err := sm.simpleTracker.AreURLsProcessed(ctx, urlsToCheck)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check URL processing status: %w", err)
+	}
+
+	// Filter keywords based on URL processing status
+	var filteredKeywords []string
+	for _, keyword := range keywords {
+		specificURL, hasURL := keywordToURL[keyword]
+		if !hasURL {
+			// No specific URL mapping, include the keyword
+			filteredKeywords = append(filteredKeywords, keyword)
+			continue
+		}
+
+		isProcessed, exists := urlProcessingStatus[specificURL]
+		if !exists || !isProcessed {
+			// URL not processed or status unknown, include the keyword
+			filteredKeywords = append(filteredKeywords, keyword)
+		}
+		// Skip keywords whose URLs have already been processed
+	}
+
+	sm.secureLog.SafeDebug("Filtered keywords based on URL processing status", map[string]interface{}{
+		"total_keywords":     len(keywords),
+		"urls_checked":       len(urlsToCheck),
+		"filtered_keywords":  len(filteredKeywords),
+		"deduplication_rate": fmt.Sprintf("%.1f%%", float64(len(filteredKeywords))/float64(len(keywords))*100),
+	})
+
+	return filteredKeywords, nil
+}
+
 // saveProcessedSitemaps function removed - now saving happens in queryAndSubmitKeywords after API success
 
 // Close properly closes all resources (implements proper cleanup)
